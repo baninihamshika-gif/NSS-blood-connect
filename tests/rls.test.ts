@@ -212,6 +212,20 @@ describe('Row Level Security', () => {
       const { data: unchanged } = await requesterA.client.from('blood_requests').select('status').eq('id', requestAId).single()
       expect(unchanged?.status).toBe('MATCHING')
     })
+
+    it('rejects units_required outside 1-50 at the database level (Phase 3 form validation is defense in depth, not the boundary)', async () => {
+      const { error: zeroUnits } = await requesterA.client
+        .from('blood_requests')
+        .insert({ requester_id: requesterA.id, blood_group: 'O+', units_required: 0 })
+      expect(zeroUnits).not.toBeNull()
+      expect(zeroUnits?.code).toBe('23514')
+
+      const { error: tooManyUnits } = await requesterA.client
+        .from('blood_requests')
+        .insert({ requester_id: requesterA.id, blood_group: 'O+', units_required: 51 })
+      expect(tooManyUnits).not.toBeNull()
+      expect(tooManyUnits?.code).toBe('23514')
+    })
   })
 
   describe('donor_matches (writes reserved for trusted server-side logic)', () => {

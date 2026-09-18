@@ -15,6 +15,10 @@ import { NotFoundPage } from '@/pages/public/NotFoundPage'
 import { DonorDashboardPage } from '@/pages/donor/DonorDashboardPage'
 import { DonorProfilePage } from '@/pages/donor/DonorProfilePage'
 import { RequesterDashboardPage } from '@/pages/requester/RequesterDashboardPage'
+import { CreateRequestPage } from '@/pages/requester/CreateRequestPage'
+import { EmergencyRequestPage } from '@/pages/requester/EmergencyRequestPage'
+import { RequestHistoryPage } from '@/pages/requester/RequestHistoryPage'
+import { RequestDetailsPage } from '@/pages/requester/RequestDetailsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -58,6 +62,38 @@ function AppRoutes() {
           element={
             <ProtectedRoute allowedRole="REQUESTER">
               <RequesterDashboardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/requester/requests/new"
+          element={
+            <ProtectedRoute allowedRole="REQUESTER">
+              <CreateRequestPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/requester/requests/emergency"
+          element={
+            <ProtectedRoute allowedRole="REQUESTER">
+              <EmergencyRequestPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/requester/requests"
+          element={
+            <ProtectedRoute allowedRole="REQUESTER">
+              <RequestHistoryPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/requester/requests/:id"
+          element={
+            <ProtectedRoute allowedRole="REQUESTER">
+              <RequestDetailsPage />
             </ProtectedRoute>
           }
         />

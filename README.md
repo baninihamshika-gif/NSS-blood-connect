@@ -42,9 +42,9 @@ src/
 │   ├── ui/            reusable primitives (Button, Input, Card, Badge, EmptyState, ...)
 │   ├── layout/         Navbar, PublicLayout, DashboardLayout
 │   ├── dashboard/       dashboard-specific widgets (Phase 9)
-│   ├── donor/           donor-specific components (Phase 2+)
-│   ├── requester/       requester-specific components (Phase 3+)
-│   ├── requests/        request cards/forms (Phase 3+)
+│   ├── donor/           donor-specific components (reserved; donor pages are self-contained so far)
+│   ├── requester/       requester-specific components (reserved; requester pages are self-contained so far)
+│   ├── requests/        RequestListItem (shared by request history + dashboard)
 │   ├── matching/        match cards (Phase 4+)
 │   ├── notifications/   notification UI (Phase 8)
 │   └── map/             Leaflet map components (Phase 8)
@@ -106,7 +106,7 @@ supabase db push
 
 Or paste each file's contents into the Supabase SQL editor in order.
 
-**Status:** a live Supabase project is provisioned and linked; all 3 migrations are applied. `.env`
+**Status:** a live Supabase project is provisioned and linked; all 4 migrations are applied. `.env`
 is populated locally (gitignored — never commit it). If you need to point this project at a
 different Supabase instance, update `.env` and re-run `supabase link` + `supabase db push`.
 
@@ -124,6 +124,26 @@ negative test confirming a user cannot insert a profile row under someone else's
 
 Site URL and redirect allow-list on the Supabase project are set to `http://localhost:5173` for local
 dev; update these in Auth settings before deploying elsewhere.
+
+### Demo accounts (local dev only)
+
+Two pre-confirmed accounts exist on the linked project for quick manual testing — one donor
+(`demo.donor.nssblood@gmail.com`), one requester (`demo.requester.nssblood@gmail.com`) — with real
+`profiles`/`donor_profiles` rows already seeded. Their credentials live in `.env` (not committed). The
+demo requester also has two sample `blood_requests` (created through the real Phase 3 UI during
+testing, left in place as example data rather than cleaned up).
+
+The login page shows "Demo Donor"/"Demo Requester" one-click buttons when `VITE_DEMO_*` env vars are
+set — but **only in `npm run dev`**. This is gated by `import.meta.env.DEV`, which Vite statically
+replaces with `false` in a production build; the ternary constructing `demoAccounts` folds to
+`{ donor: null, requester: null }` and the real credential strings never get embedded in the built
+bundle (verified by grepping `dist/` for them — zero matches). The buttons themselves stay in the
+bundle as inert UI (they just never render, since the accounts are `null`), which is expected and not
+a secret-exposure concern.
+
+To set this up on a fresh clone: create the two accounts in Supabase (Admin API or dashboard, with
+`email_confirm: true`) and matching `profiles`/`donor_profiles` rows, then fill in `.env` per
+`.env.example`. Optional — the app works fine with these unset, the buttons just don't appear.
 
 ### Privacy & RLS design notes
 
@@ -167,12 +187,12 @@ delete disposable test accounts). `.env` supplies the same `VITE_SUPABASE_URL` /
 npm run test
 ```
 
-37 tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
+38 tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
 role-gating on `donor_profiles`/`blood_requests` inserts (`current_user_role()`); match/response/
 notification/history visibility restricted to participants; duplicate-match and duplicate-response
-rejection (unique constraints); future-dated `date_of_birth`/`last_donation_date` rejected at the
-database level (defense in depth behind the Phase 2 profile-edit form's own validation); and
-unauthenticated (anon) access returning zero rows from every sensitive table.
+rejection (unique constraints); future-dated `date_of_birth`/`last_donation_date` and out-of-range
+`units_required` rejected at the database level (defense in depth behind the Phase 2/3 forms' own
+validation); and unauthenticated (anon) access returning zero rows from every sensitive table.
 
 ## Phase Plan
 
@@ -183,7 +203,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 0 | Project initialization from scratch: tooling, routing, Supabase client, full schema + RLS foundation, auth (register/login/logout/password reset), protected routes, landing/dashboard shells | **Done** |
 | 1 | Foundation hardening: full RLS verification across both roles (36 automated tests), loading/error/empty-states audit and fix | **Done** |
 | 2 | Donor module: editable profile (basic info + donor details), availability control, real donation history query, privacy notice | **Done** |
-| 3 | Requester module: create request (normal/emergency), request history/details | Not started |
+| 3 | Requester module: real dashboard (own stats + recent requests), create request (normal/emergency), request history/details | **Done** |
 | 4 | Matching engine: server-side matching, transparent ranking, `donor_matches` generation | Not started |
 | 5 | Donor request & response: notify donors, accept/decline | Not started |
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI | Not started |
@@ -197,14 +217,25 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 Not yet implemented. When implemented, weights and eligibility windows will be documented here and
 kept configurable rather than hard-coded, per the project's medical-safety rule.
 
-## Known Limitations (through Phase 2)
+## Known Limitations (through Phase 3)
 
-- No requester feature pages beyond the dashboard shell yet — request creation, matching, responses,
-  tracking, notifications, and the map are implemented in later phases.
+- Request creation (normal + emergency), history, and details are live; matching, donor responses,
+  the status-history timeline, and the map are still later phases.
 - "Incoming Requests" on the donor dashboard stays an empty-state placeholder by design — a donor
   actually seeing matched requests depends on the matching engine (Phase 4) and donor-notification
   flow (Phase 5), which don't exist yet. Wiring a "preview" query against raw `blood_requests` now
   would jump ahead of those phases and show donors data with no real matching behind it.
+- The emergency request form creates the `blood_requests` row (type `EMERGENCY`, priority
+  `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — that
+  behavior belongs to the matching engine (Phase 4) and cascade (Phase 7), neither of which exists yet.
+  Showing invented numbers now would violate the "no fake production data" rule.
+- Request details currently shows a single current status badge, not the full timeline UI from the
+  reference design (✓ Request Created → ✓ Matching Started → ...) — that's explicitly Phase 6
+  (`request_status_history` + timeline UI).
+- No edit/cancel on an existing request yet — Phase 6 ("Completion and cancellation").
+- The requester dashboard's stat tiles (Active/Emergency/Total/Fulfilled) are computed client-side
+  from the requester's own `useMyBloodRequests()` result, not a separate aggregate query — fine at
+  current scale; revisit with a dedicated count query if a requester's request list ever gets large.
 - `blood_group` is intentionally **not** editable from the profile page — it's a safety-sensitive,
   self-reported field; the UI points users to contact support instead of allowing casual self-edits.
   (The database itself doesn't block a donor from updating their own `donor_profiles.blood_group` —
@@ -217,8 +248,9 @@ kept configurable rather than hard-coded, per the project's medical-safety rule.
   but will read 0 until real profiles/requests exist.
 - Email confirmation is required on the linked project; see [Email confirmation](#email-confirmation)
   above for how the register flow handles this via `user_metadata` backfill.
-- No seed/demo data included yet — deferred so a future decision to add it can't be confused with the
-  real emergency data the app will eventually hold.
+- No general seed/demo data beyond the two labeled [demo accounts](#demo-accounts-local-dev-only) —
+  deliberately not auto-populating the wider database, so nothing could be mistaken for real emergency
+  data as the app grows.
 - Auth emails (confirmation, password reset) send through Supabase's default/shared mailer, which is
   rate-limited and not meant for production — configure custom SMTP before launch.
 - `ProtectedRoute` only redirects on a *role mismatch* (e.g. a donor hitting `/requester/dashboard`);
