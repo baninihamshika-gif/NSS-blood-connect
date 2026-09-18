@@ -65,7 +65,10 @@ src/
 
 supabase/
 ├── migrations/           numbered SQL migrations (schema, triggers, RLS)
-└── functions/            Edge Functions: match-donors, emergency-search, notifications (Phase 4+)
+└── functions/
+    ├── match-donors/     deployed — matching engine (Phase 4)
+    ├── emergency-search/ reserved for the cascade (Phase 7)
+    └── notifications/    reserved for donor notification (Phase 5)
 ```
 
 ## Environment Variables
@@ -109,6 +112,19 @@ Or paste each file's contents into the Supabase SQL editor in order.
 **Status:** a live Supabase project is provisioned and linked; all 4 migrations are applied. `.env`
 is populated locally (gitignored — never commit it). If you need to point this project at a
 different Supabase instance, update `.env` and re-run `supabase link` + `supabase db push`.
+
+### Edge Functions
+
+`match-donors` is deployed to the linked project. Redeploy after changes with:
+
+```
+supabase functions deploy match-donors --use-api
+```
+
+`--use-api` bundles server-side instead of via Docker — this machine doesn't have Docker installed,
+and this flag makes that a non-issue. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
+`SUPABASE_SERVICE_ROLE_KEY` are injected automatically by the platform for every deployed function;
+nothing extra to configure.
 
 ### Email confirmation
 
@@ -183,16 +199,36 @@ code — `tests/setup/testClient.ts` is the only place that touches it, and only
 delete disposable test accounts). `.env` supplies the same `VITE_SUPABASE_URL` /
 `VITE_SUPABASE_PUBLISHABLE_KEY` the app uses, so tests exercise the same RLS policies real users hit.
 
+**Caveat learned the hard way (Phase 4):** these tests share the live database with the
+[demo accounts](#demo-accounts-local-dev-only) — a matching test that asserted an exact total match
+count broke the moment the demo donor became a real `AVAILABLE`/eligible O+ donor, because it
+legitimately also matched the test's O+ request. The fix, and the pattern to follow for any future
+matching/cascade test: assert donor-specific membership (`expect(matchedDonorIds.has(x)).toBe(true)`)
+rather than exact counts, since a live shared database can never be assumed to be under a test's
+exclusive control.
+
 ```
 npm run test
 ```
 
-38 tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
+38 RLS tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
 role-gating on `donor_profiles`/`blood_requests` inserts (`current_user_role()`); match/response/
 notification/history visibility restricted to participants; duplicate-match and duplicate-response
 rejection (unique constraints); future-dated `date_of_birth`/`last_donation_date` and out-of-range
 `units_required` rejected at the database level (defense in depth behind the Phase 2/3 forms' own
 validation); and unauthenticated (anon) access returning zero rows from every sensitive table.
+
+`tests/matching-logic.test.ts` (21 tests) unit-tests the matching engine's pure scoring/compatibility
+math in isolation — see [Matching Engine](#matching-engine-phase-4) below.
+
+`tests/matching-function.test.ts` (6 tests) is a live integration test against the **deployed**
+`match-donors` Edge Function: ownership authorization (a different requester or a donor cannot trigger
+matching on someone else's request — 403), 404 on a nonexistent request, correct filtering (only the
+compatible + available + eligible donor matches, not the incompatible/unavailable/recently-donated
+ones), the `CREATED` → `MATCHING` status transition with its `request_status_history` row, and
+idempotency (re-running does not create a duplicate `donor_matches` row).
+
+65 tests total, all passing against the live project.
 
 ## Phase Plan
 
@@ -204,7 +240,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 1 | Foundation hardening: full RLS verification across both roles (36 automated tests), loading/error/empty-states audit and fix | **Done** |
 | 2 | Donor module: editable profile (basic info + donor details), availability control, real donation history query, privacy notice | **Done** |
 | 3 | Requester module: real dashboard (own stats + recent requests), create request (normal/emergency), request history/details | **Done** |
-| 4 | Matching engine: server-side matching, transparent ranking, `donor_matches` generation | Not started |
+| 4 | Matching engine: server-side matching (Edge Function), transparent ranking, `donor_matches` generation | **Done** |
 | 5 | Donor request & response: notify donors, accept/decline | Not started |
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI | Not started |
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | Not started |
@@ -212,23 +248,96 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | Not started |
 | 10 | Final QA/hardening, docs | Not started |
 
-## Matching Rules (Phase 4)
+## Matching Engine (Phase 4)
 
-Not yet implemented. When implemented, weights and eligibility windows will be documented here and
-kept configurable rather than hard-coded, per the project's medical-safety rule.
+Implemented as the `match-donors` Supabase Edge Function (`supabase/functions/match-donors/`) —
+deployed and running server-side. The client only ever sends a `requestId`; every eligibility check
+and score is computed from trusted database reads inside the function, using the service-role key
+(which bypasses RLS deliberately — this function IS the trusted server-side logic that
+`donor_matches`'s RLS policy defers to, since that table has no client insert policy). **The client
+never supplies, and the server never trusts, a match score or an eligibility flag.**
 
-## Known Limitations (through Phase 3)
+All decision logic lives in `matching-logic.ts`, a plain dependency-free TypeScript module imported
+unmodified by both the Deno edge function and the Vitest unit tests (`tests/matching-logic.test.ts`)
+— so the exact function producing a real donor's score is the one being tested, not a reimplementation
+of it.
 
-- Request creation (normal + emergency), history, and details are live; matching, donor responses,
-  the status-history timeline, and the map are still later phases.
+### Safety gate: blood-group compatibility
+
+Standard, published ABO/Rh whole-blood-donation compatibility chart (O- universal donor, AB+
+universal recipient), encoded in `DONOR_CAN_GIVE_TO` in `matching-logic.ts`. Used **only** as a
+software filter to surface plausible candidates. Per the project's safety rule, this is not clinical
+clearance — the UI never claims a match is "verified compatible," only that it's a suggested
+candidate. Real transfusion compatibility must be confirmed by qualified medical staff at the point
+of donation, regardless of what this system shows.
+
+### Safety gate: donation eligibility window
+
+`MIN_DAYS_SINCE_LAST_DONATION = 90` (days) — a donor who donated more recently than this is excluded
+from candidacy entirely (not just scored lower). **This is an explicit, named placeholder, not a
+medically-reviewed rule** — real minimum intervals vary by country/regulation. It must be replaced
+with a value from qualified medical/regulatory guidance before this system is used for real donation
+coordination; changing it means editing one named constant in `matching-logic.ts`.
+
+### Transparent prioritization weights
+
+Ranks already-eligible candidates — **not** a medical fitness score. Matches the project spec's
+documented weights out of 100:
+
+| Factor | Weight | Notes |
+|---|---|---|
+| Distance | 25 | Haversine distance between `approx_lat/lng` on the request and the donor; unknown coordinates (no location-capture UI yet — that's Phase 8) score a neutral half-credit rather than being penalized. Linear falloff to 0 at `MAX_MATCH_DISTANCE_KM = 50`. |
+| Availability | 15 | `AVAILABLE` = full credit, `MAYBE` = half, `UNAVAILABLE` donors are excluded from candidacy before scoring even applies. |
+| Donation timing | 10 | 0 at the eligibility boundary, ramping to full credit by `DONATION_TIMING_FULL_SCORE_DAYS = 180` days since last donation; no history recorded = full credit (treated as ready). |
+| Response history | 10 | Accept rate from past `donor_responses`. No history yet (Phase 5 hasn't shipped, so this is currently 0 for every donor) = neutral half-credit, not penalized. |
+
+These four factors sum to a weight budget of 60, matching the spec exactly (25+15+10+10). **The
+remaining 40 is deliberately left unallocated** rather than filled with an invented fifth factor — the
+spec is explicit that additional weighting "must be finalized only if justified," and no
+medically-reviewed justification exists yet for what that should be. The 0-100 "match relevance"
+percentage shown in the UI renormalizes across only these four implemented factors (divides the raw
+weighted sum by 60), so it still reads as a clean percentage without fabricating criteria.
+
+### Scope: single batch, not a cascade
+
+One run matches up to `MATCH_CANDIDATE_LIMIT = 20` top-scored eligible candidates. It does not
+notify donors (Phase 5), does not expand search radius or retry in waves if too few candidates exist
+(Emergency Cascade, Phase 7), and does not show fake "searching donors" progress. Re-running matching
+on the same request is idempotent — existing `donor_matches` rows get their score/distance refreshed,
+not duplicated (enforced by the `(request_id, donor_id)` unique constraint plus explicit
+insert-vs-update branching in the function), and an existing match's `match_status` is never reset by
+a re-run (important once Phase 5 lets a donor actually accept/decline).
+
+### Privacy: no donor identity in match results
+
+The requester-facing match list (`DonorMatchCard`) shows only blood group, distance, and match
+relevance — never the donor's name. This follows directly from the Phase 1 RLS fix: `profiles` SELECT
+is self-only, so a requester cannot read a matched donor's `full_name` even if the UI tried to show
+it. Per the reference UI's "Contact: Available after confirmation," identity/contact should only
+surface after an actual accepted response — a stronger relationship than "software suggested a
+match" — which is Phase 5+ scope, not Phase 4.
+
+## Known Limitations (through Phase 4)
+
+- Request creation (normal + emergency), history, details, and matching are live; donor notification
+  and response, the status-history timeline, and the map are still later phases.
 - "Incoming Requests" on the donor dashboard stays an empty-state placeholder by design — a donor
-  actually seeing matched requests depends on the matching engine (Phase 4) and donor-notification
-  flow (Phase 5), which don't exist yet. Wiring a "preview" query against raw `blood_requests` now
-  would jump ahead of those phases and show donors data with no real matching behind it.
+  actually *seeing* a request they're matched to depends on the notification flow (Phase 5), which
+  doesn't exist yet, even though matching itself (Phase 4) does now. Querying `donor_matches` for a
+  "preview" now would jump ahead of Phase 5's actual notification/accept-decline UX.
 - The emergency request form creates the `blood_requests` row (type `EMERGENCY`, priority
-  `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — that
-  behavior belongs to the matching engine (Phase 4) and cascade (Phase 7), neither of which exists yet.
-  Showing invented numbers now would violate the "no fake production data" rule.
+  `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — running
+  the real matching engine from the request details page produces real numbers instead. Wave-based
+  expansion if too few candidates are found is the cascade (Phase 7), not yet implemented.
+- Distance and response-history match factors are currently neutral for almost every real donor —
+  not a bug, just sparse upstream data: no location-capture UI exists yet (Phase 8) so
+  `approx_lat/lng` is null on every request/donor, and no donor has ever responded to anything yet
+  (Phase 5 doesn't exist). Both factors are fully implemented and will start discriminating
+  automatically once that data exists — no matching-engine changes needed later.
+- `match-donors` is invoked directly from the client via `supabase.functions.invoke` on a button
+  click, not automatically on request creation — a requester has to press "Find Matching Donors."
+  Nothing in the spec requires auto-triggering, and doing so silently would make matching runs harder
+  to reason about while testing; revisit if Phase 5+ wants it automatic.
 - Request details currently shows a single current status badge, not the full timeline UI from the
   reference design (✓ Request Created → ✓ Matching Started → ...) — that's explicitly Phase 6
   (`request_status_history` + timeline UI).
