@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { Spinner } from '@/components/ui/Spinner'
+import { LocationPicker, type LatLng } from '@/components/map/LocationPicker'
 
 function BasicInfoForm() {
   const { profile } = useAuth()
@@ -73,6 +74,7 @@ function DonorDetailsForm() {
   const { data: donorProfile, isLoading, isError } = useDonorProfile()
   const updateDonorProfile = useUpdateDonorProfile()
   const [saved, setSaved] = useState(false)
+  const [location, setLocation] = useState<LatLng | null>(null)
 
   const {
     register,
@@ -82,18 +84,26 @@ function DonorDetailsForm() {
   } = useForm<DonorDetailsFormValues>({ resolver: zodResolver(donorDetailsSchema) })
 
   useEffect(() => {
+    // Syncing local edit state from an async query result once it arrives —
+    // not derived-during-render state (donorProfile is undefined until the
+    // query resolves), same justification as the reset() call right below.
     if (donorProfile) {
       reset({
         availabilityStatus: donorProfile.availability_status,
         dateOfBirth: donorProfile.date_of_birth ?? '',
         lastDonationDate: donorProfile.last_donation_date ?? '',
       })
+      setLocation(
+        donorProfile.approx_lat != null && donorProfile.approx_lng != null
+          ? { lat: donorProfile.approx_lat, lng: donorProfile.approx_lng }
+          : null,
+      )
     }
   }, [donorProfile, reset])
 
   const onSubmit = async (values: DonorDetailsFormValues) => {
     setSaved(false)
-    await updateDonorProfile.mutateAsync(values)
+    await updateDonorProfile.mutateAsync({ ...values, approxLat: location?.lat, approxLng: location?.lng })
     setSaved(true)
   }
 
@@ -141,6 +151,7 @@ function DonorDetailsForm() {
           error={errors.lastDonationDate?.message}
           {...register('lastDonationDate')}
         />
+        <LocationPicker value={location} onChange={setLocation} label="Approximate location (optional)" />
         <div className="flex items-center gap-3">
           <Button type="submit" isLoading={updateDonorProfile.isPending}>
             Save changes

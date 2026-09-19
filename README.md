@@ -292,7 +292,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 5 | Donor request & response: notify donors on match, donor sees request, accept/decline | **Done** |
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI, completion/cancellation, partial fulfillment | **Done** |
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | **Done** |
-| 8 | Realtime, notifications, map (Leaflet/OSM) | Not started |
+| 8 | Realtime, notifications, map (Leaflet/OSM) | **Done** |
 | 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | Not started |
 | 10 | Final QA/hardening, docs | Not started |
 
@@ -334,7 +334,7 @@ documented weights out of 100:
 
 | Factor | Weight | Notes |
 |---|---|---|
-| Distance | 25 | Haversine distance between `approx_lat/lng` on the request and the donor; unknown coordinates (no location-capture UI yet — that's Phase 8) score a neutral half-credit rather than being penalized. Linear falloff to 0 at `MAX_MATCH_DISTANCE_KM = 50`. |
+| Distance | 25 | Haversine distance between `approx_lat/lng` on the request and the donor; unknown coordinates (location-capture is opt-in — see [Phase 8](#realtime-notifications--map-phase-8)) score a neutral half-credit rather than being penalized. Linear falloff to 0 at `MAX_MATCH_DISTANCE_KM = 50`. |
 | Availability | 15 | `AVAILABLE` = full credit, `MAYBE` = half, `UNAVAILABLE` donors are excluded from candidacy before scoring even applies. |
 | Donation timing | 10 | 0 at the eligibility boundary, ramping to full credit by `DONATION_TIMING_FULL_SCORE_DAYS = 180` days since last donation; no history recorded = full credit (treated as ready). |
 | Response history | 10 | Accept rate from past `donor_responses`. Real once a donor has responded to prior matches (Phase 5); a donor with no history yet = neutral half-credit, not penalized. |
@@ -389,8 +389,9 @@ trigger sets `responded_at` from the server clock rather than trusting the clien
 Once accepted, the donor sees an "✓ Request Accepted" card (hospital name, "Contact: Available after
 confirmation") matching the required reference UI — and the requester's match list picks up the
 `ACCEPTED` badge automatically through the same trigger, no extra requester-side code needed. No
-fabricated ETA or a `[VIEW DIRECTIONS]` button — those need real location/routing data (Phase 8) and
-would otherwise be exactly the kind of invented data the project's rules prohibit.
+fabricated ETA or a `[VIEW DIRECTIONS]` button — those need real routing/ETA data, which no phase
+builds (Phase 8 adds approximate locations and a map, not turn-by-turn routing), and would otherwise be
+exactly the kind of invented data the project's rules prohibit.
 
 ## Request Tracking (Phase 6)
 
@@ -406,7 +407,7 @@ CREATED ──▶ MATCHING ──▶ PARTIALLY_FULFILLED ──▶ FULFILLED ─
 ```
 
 (`CONTACTING_DONORS` is a legal node in the graph but isn't currently reachable — see
-[Known Limitations](#known-limitations-through-phase-6) below.)
+[Known Limitations](#known-limitations-through-phase-8) below.)
 
 - A **client update** (the requester, via their own RLS-permitted update) may only ever set the new
   status to `CANCELLED` or `COMPLETED` — the two genuinely user-driven actions. Attempting to set
@@ -460,7 +461,8 @@ not a medical one. Each invocation walks forward from `blood_requests.cascade_ti
 so a later call resumes rather than re-scanning), notifying every untried eligible donor within the
 first tier that has one. A `null` donor/request distance counts as "within every tier" (consistent
 with the neutral-if-unknown treatment already used in scoring), so this is fully exercised today via
-the test suite's synthetic coordinates, even though almost no real donor has a location yet (Phase 8).
+the test suite's synthetic coordinates, even though real location data is still sparse in practice
+(location-setting is opt-in — see [Phase 8](#realtime-notifications--map-phase-8)).
 One call = one step forward (find more within the current tier, or expand to the next one) — there's
 no background polling; the requester presses "Continue Emergency Search" to advance.
 
@@ -499,16 +501,101 @@ browser session's mutation state — which resets on page reload, so a requester
 cascade and came back later would misleadingly see "Activate" again. Fixed to read
 `blood_requests.cascade_tier_index` (real server-side progress) instead.
 
-## Known Limitations (through Phase 7)
+## Realtime, Notifications & Map (Phase 8)
+
+### Realtime
+
+Every table a screen needs to stay live on (`donor_matches`, `blood_requests`, `notifications`,
+`request_status_history`) is added to the `supabase_realtime` publication (migration `0009`). A single
+reusable hook, `useRealtimeInvalidate`, wraps `supabase.channel(...).on('postgres_changes', ...)` and
+invalidates the relevant TanStack Query key(s) on any change — it doesn't merge the payload into cache
+by hand, it just triggers a refetch through the existing RLS-scoped query, so a client can never see
+more via the realtime channel than its own `SELECT` policy already allows. Wired into every hook whose
+data can change from another session: `useNotifications`, `useIncomingMatches`,
+`useIncomingMatchDetails`, `useDonorMatches`, `useBloodRequestDetails`, `useRequestStatusHistory`, and
+`useMyBloodRequests`.
+
+Verified live, cross-session, with two separate browser *contexts* (separate storage — a single
+context shares one Supabase auth session across tabs via `localStorage`, which isn't representative of
+two different real users): a requester's request-details page, left open with no reload, correctly
+flips from "Matching" to "Fulfilled," the donor badge to `ACCEPTED`, and the map pin from orange to
+green within seconds of a donor accepting the match in a completely separate browser session.
+
+**A real bug this caught:** `useIncomingMatchDetails` (the donor's own single-match detail page) was
+missing from that wiring — and separately, `useRespondToMatch`'s success handler invalidated the query
+key `['incoming-matches', user.id]` (the donor's *list* of matches), not `['incoming-match', matchId]`
+(the *singular* detail page's own key, a naming mismatch, not just a missing call). The practical
+effect: a donor who accepted or declined a match on its detail page never saw their own action reflected
+on that same page — not a stale-list bug, a stale-detail-page bug, and one that only live cross-session
+testing surfaces (a component test with a mocked query client wouldn't have caught the real key
+mismatch). Fixed by adding the same `useRealtimeInvalidate` wiring used everywhere else, filtered to
+that one match row (`id=eq.${matchId}`) — consistent with the rest of the codebase's pattern rather than
+a one-off manual invalidation.
+
+### Notifications
+
+`NotificationBell` (in the navbar, next to Log out) is the first UI for the `notifications` table,
+which `match-donors`/`emergency-search` have been writing to since Phase 5/7 with no viewer until now.
+Shows the 20 most recent, unread-count badge (capped at "9+"), "Mark all read," relative timestamps, and
+click-to-navigate — routed by role: a requester goes straight to the relevant request; a donor goes to
+their dashboard, not the specific match, because the notification row doesn't carry the donor's
+`donor_matches.id`, only the `request_id` — a known simplification (see below), not a missing feature by
+accident.
+
+### Approximate location capture
+
+`LocationPicker` (Leaflet + OpenStreetMap, no API key needed) is used on both the donor profile
+("Approximate location") and request creation (normal + emergency). Click-to-place, drag-to-adjust, an
+optional "Use my location" via `navigator.geolocation`, and always-visible manual latitude/longitude
+number inputs as a first-class alternative, not just a fallback. Every coordinate is rounded to 3
+decimal places (~100m) client-side, before it ever reaches the database — consistent with the project's
+existing "never expose a donor's exact location" rule from Phase 1 onward; there's no separate
+server-side rounding step because the raw, unrounded coordinate is simply never sent.
+
+### Map visualization
+
+`RequestMap` (read-only, on the request-details page) plots the request's location (red) and every
+matched donor with a known location (green/orange/gray by `match_status`), with a legend and a "never
+exact addresses" note. **A real bug found and fixed during live testing:** the map originally centered
+on the request at a fixed `zoom={11}` — a donor 205km away (a genuine distance computed once both a
+request and a donor had real coordinates, the first time that pipeline had real, non-placeholder data
+end-to-end) fell silently outside that viewport, with no visual indication a pin existed off-screen.
+Fixed with a `FitBounds` helper (`useMap()` + `L.fitBounds`/`setView`) that fits the viewport to every
+known point — the request plus every donor pin, however far apart — instead of guessing a zoom level;
+a single point still gets a sensible default zoom rather than an unusably tight fit. The effect is keyed
+on the points' actual coordinates (not the array reference, which is new on every render) so a
+realtime-triggered re-render doesn't keep snapping the view back and fighting a user's manual pan/zoom.
+
+### Graceful degradation
+
+`MapErrorBoundary` catches render-time map failures and falls back to a plain message, never taking
+down the surrounding page — verified as a standard React error-boundary pattern by inspection (forcing
+a genuine Leaflet internal exception in an automated test is artificial; the boundary itself is a
+handful of lines of standard, well-understood React). The network-failure case was verified directly:
+with all OpenStreetMap tile requests blocked mid-session, the map still renders (a blank Leaflet canvas
+with working zoom controls and a visible marker — tile load failures don't throw, Leaflet just shows
+nothing for that tile), the page doesn't crash, and — critically for `LocationPicker` specifically — the
+manual latitude/longitude inputs stay fully visible and usable throughout, so the feature never actually
+depends on the map succeeding.
+
+## Known Limitations (through Phase 8)
 
 - Request creation (normal + emergency), history, details, matching, the emergency cascade, donor
-  notification/response, and the full status-tracking lifecycle (auto-fulfillment, completion,
-  cancellation) are all live; only the map and real location-capture UI (Phase 8) remain.
-- The distance match factor (and the cascade's radius tiers) are currently neutral/inert for almost
-  every real donor/request pair — not a bug, just sparse upstream data: no location-capture UI exists
-  yet (Phase 8), so `approx_lat/lng` is null everywhere in practice. Both are fully implemented and
-  verified against synthetic coordinates in tests; they'll start discriminating automatically once
-  real location data exists — no matching-engine or cascade changes needed later.
+  notification/response, the full status-tracking lifecycle (auto-fulfillment, completion,
+  cancellation), realtime updates, in-app notifications, and approximate-location/map are all live.
+- The distance match factor (and the cascade's radius tiers) only discriminate once *both* sides of a
+  pair have set a location — still sparse in practice since location-setting is opt-in on both the donor
+  profile and request creation forms, not required. No matching-engine or cascade changes are needed as
+  more real coordinates accumulate; this is purely a function of how much location data users choose to
+  provide.
+- `NotificationBell`'s click-to-navigate sends a donor to their dashboard rather than the specific match,
+  because the `notifications` row only carries `request_id`, not the donor's own `donor_matches.id` —
+  fixable by having `match-donors`/`emergency-search` also write the match id onto the notification, not
+  attempted here to avoid touching already-shipped Edge Function logic outside this phase's stated scope.
+- No push/browser/email notifications — "in-app notifications" per the spec means the `NotificationBell`
+  UI, not a background delivery channel; nothing in the spec's Phase 8 scope calls for one.
+- The map has no clustering — with very many donor pins in a small area, overlapping markers aren't
+  grouped. Not a concern at current real data volumes; worth revisiting if that changes.
 - Accepting a match, and even completing a request, still doesn't reveal donor/requester contact info
   to each other — intentional, matching the reference UI's own "Contact: Available after confirmation"
   literally shown on the *accepted* state, not just before it. No phase in the spec explicitly owns

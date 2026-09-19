@@ -10,11 +10,13 @@ import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { useCreateBloodRequest } from '@/hooks/useCreateBloodRequest'
 import { createRequestSchema, type CreateRequestFormValues } from '@/lib/validation/bloodRequest'
 import { BLOOD_GROUPS } from '@/constants'
+import { LocationPicker, type LatLng } from '@/components/map/LocationPicker'
 
 export function CreateRequestPage() {
   const navigate = useNavigate()
   const createRequest = useCreateBloodRequest()
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [location, setLocation] = useState<LatLng | null>(null)
 
   const {
     register,
@@ -38,6 +40,8 @@ export function CreateRequestPage() {
         requiredTime: values.requiredTime,
         priority: values.priority,
         requestType: 'NORMAL',
+        approxLat: location?.lat,
+        approxLng: location?.lng,
       })
       navigate(`/requester/requests/${request.id}`, { replace: true })
     } catch (err) {
@@ -90,6 +94,7 @@ export function CreateRequestPage() {
             {...register('facilityName')}
           />
           <Input label="Location / area (optional)" error={errors.locationArea?.message} {...register('locationArea')} />
+          <LocationPicker value={location} onChange={setLocation} label="Approximate location on map (optional)" />
 
           <div className="grid grid-cols-2 gap-3">
             <Input

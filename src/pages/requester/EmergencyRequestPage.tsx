@@ -11,11 +11,13 @@ import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { useCreateBloodRequest } from '@/hooks/useCreateBloodRequest'
 import { createEmergencyRequestSchema, type CreateEmergencyRequestFormValues } from '@/lib/validation/bloodRequest'
 import { BLOOD_GROUPS } from '@/constants'
+import { LocationPicker, type LatLng } from '@/components/map/LocationPicker'
 
 export function EmergencyRequestPage() {
   const navigate = useNavigate()
   const createRequest = useCreateBloodRequest()
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [location, setLocation] = useState<LatLng | null>(null)
 
   const {
     register,
@@ -36,6 +38,8 @@ export function EmergencyRequestPage() {
         locationArea: values.locationArea,
         priority: values.priority,
         requestType: 'EMERGENCY',
+        approxLat: location?.lat,
+        approxLng: location?.lng,
       })
       navigate(`/requester/requests/${request.id}`, { replace: true })
     } catch (err) {
@@ -85,13 +89,13 @@ export function EmergencyRequestPage() {
 
           <Input label="Hospital / facility name" error={errors.hospitalName?.message} {...register('hospitalName')} />
           <Input label="Location / area (optional)" error={errors.locationArea?.message} {...register('locationArea')} />
+          <LocationPicker value={location} onChange={setLocation} label="Approximate location on map (optional)" />
 
           <Button type="submit" variant="danger" isLoading={createRequest.isPending} className="mt-2 w-full">
             Activate Emergency Request
           </Button>
           <p className="text-center text-xs text-gray-500">
-            Donor matching and outreach aren't live yet — this creates the request so it's ready to match as soon as
-            that's available.
+            You can activate the emergency search from the request page right after this is created.
           </p>
         </form>
       </Card>

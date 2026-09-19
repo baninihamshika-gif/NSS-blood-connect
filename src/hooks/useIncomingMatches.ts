@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
+import { useRealtimeInvalidate } from '@/hooks/useRealtimeInvalidate'
 import type { BloodRequest, MatchStatus } from '@/types/database'
 
 export interface IncomingMatch {
@@ -18,6 +19,14 @@ export interface IncomingMatch {
  * pairing used elsewhere, which has no direct FK and needs two queries). */
 export function useIncomingMatches() {
   const { user } = useAuth()
+
+  useRealtimeInvalidate({
+    channelName: `incoming-matches:${user?.id ?? 'anon'}`,
+    table: 'donor_matches',
+    filter: user ? `donor_id=eq.${user.id}` : undefined,
+    queryKeys: [['incoming-matches', user?.id]],
+    enabled: Boolean(user),
+  })
 
   return useQuery({
     queryKey: ['incoming-matches', user?.id],

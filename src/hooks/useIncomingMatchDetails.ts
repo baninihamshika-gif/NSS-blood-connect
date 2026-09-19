@@ -1,12 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
+import { useRealtimeInvalidate } from '@/hooks/useRealtimeInvalidate'
 import type { IncomingMatch } from '@/hooks/useIncomingMatches'
 
 /** Scoped to the current donor's own matches, same pattern as
  * useBloodRequestDetails on the requester side. */
 export function useIncomingMatchDetails(matchId: string | undefined) {
   const { user } = useAuth()
+
+  useRealtimeInvalidate({
+    channelName: `incoming-match:${matchId ?? 'none'}`,
+    table: 'donor_matches',
+    filter: matchId ? `id=eq.${matchId}` : undefined,
+    queryKeys: [['incoming-match', matchId]],
+    enabled: Boolean(matchId),
+  })
 
   return useQuery({
     queryKey: ['incoming-match', matchId],

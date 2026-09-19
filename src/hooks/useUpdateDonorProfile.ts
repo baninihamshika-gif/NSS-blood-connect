@@ -7,6 +7,8 @@ export interface UpdateDonorProfileInput {
   availabilityStatus: AvailabilityStatus
   dateOfBirth?: string
   lastDonationDate?: string
+  approxLat?: number | null
+  approxLng?: number | null
 }
 
 export function useUpdateDonorProfile() {
@@ -22,6 +24,8 @@ export function useUpdateDonorProfile() {
           availability_status: input.availabilityStatus,
           date_of_birth: input.dateOfBirth || null,
           last_donation_date: input.lastDonationDate || null,
+          approx_lat: input.approxLat ?? null,
+          approx_lng: input.approxLng ?? null,
         })
         .eq('user_id', user.id)
       if (error) throw error

@@ -15,6 +15,7 @@ import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { DonorMatchCard } from '@/components/matching/DonorMatchCard'
 import { RequestTimeline } from '@/components/requests/RequestTimeline'
+import { RequestMap } from '@/components/map/RequestMap'
 import { priorityTone, statusLabel, statusTone } from '@/lib/utilities/requestDisplay'
 import type { RequestStatus, RequestType } from '@/types/database'
 
@@ -134,11 +135,13 @@ function MatchingSection({
   requestStatus,
   requestType,
   cascadeTierIndex,
+  requestLocation,
 }: {
   requestId: string
   requestStatus: RequestStatus
   requestType: RequestType
   cascadeTierIndex: number | null
+  requestLocation: { lat: number; lng: number } | null
 }) {
   const findMatches = useFindMatches(requestId)
   const { data: matches, isLoading, isError } = useDonorMatches(requestId)
@@ -201,6 +204,13 @@ function MatchingSection({
           {matches.map((match) => (
             <DonorMatchCard key={match.id} match={match} />
           ))}
+        </div>
+      )}
+
+      {!isLoading && !isError && (
+        <div className="mt-4">
+          <h3 className="mb-2 text-sm font-semibold text-gray-700">Map</h3>
+          <RequestMap requestLocation={requestLocation} matches={matches ?? []} />
         </div>
       )}
     </div>
@@ -304,6 +314,7 @@ export function RequestDetailsPage() {
             requestStatus={request.status}
             requestType={request.request_type}
             cascadeTierIndex={request.cascade_tier_index}
+            requestLocation={request.approx_lat != null && request.approx_lng != null ? { lat: request.approx_lat, lng: request.approx_lng } : null}
           />
         </>
       )}

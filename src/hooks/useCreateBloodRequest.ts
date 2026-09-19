@@ -13,6 +13,8 @@ export interface CreateBloodRequestInput {
   requiredTime?: string
   priority: RequestPriority
   requestType: RequestType
+  approxLat?: number | null
+  approxLng?: number | null
 }
 
 export function useCreateBloodRequest() {
@@ -35,6 +37,8 @@ export function useCreateBloodRequest() {
           required_time: input.requiredTime || null,
           priority: input.priority,
           request_type: input.requestType,
+          approx_lat: input.approxLat ?? null,
+          approx_lng: input.approxLng ?? null,
         })
         .select()
         .single()
