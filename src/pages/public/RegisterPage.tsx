@@ -17,7 +17,6 @@ export function RegisterPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [confirmationSent, setConfirmationSent] = useState(false)
 
   const defaultRole: UserRole = searchParams.get('role') === 'DONOR' ? 'DONOR' : 'REQUESTER'
 
@@ -36,7 +35,7 @@ export function RegisterPage() {
   const onSubmit = async (values: RegisterFormValues) => {
     setSubmitError(null)
     try {
-      const hasSession = await registerUser({
+      await registerUser({
         email: values.email,
         password: values.password,
         fullName: values.fullName,
@@ -46,30 +45,10 @@ export function RegisterPage() {
         area: values.area || undefined,
         bloodGroup: values.role === 'DONOR' ? values.bloodGroup : undefined,
       })
-      if (hasSession) {
-        navigate(values.role === 'DONOR' ? '/donor/dashboard' : '/requester/dashboard', { replace: true })
-      } else {
-        setConfirmationSent(true)
-      }
+      navigate(values.role === 'DONOR' ? '/donor/dashboard' : '/requester/dashboard', { replace: true })
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Unable to register. Please try again.')
     }
-  }
-
-  if (confirmationSent) {
-    return (
-      <div className="mx-auto max-w-md px-4 py-16 text-center">
-        <Card>
-          <h1 className="text-xl font-bold text-gray-900">Check your email</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            We sent a confirmation link to finish setting up your account. Once confirmed, log in to continue.
-          </p>
-          <Link to="/login" className="mt-4 inline-block text-sm font-medium text-brand-600 hover:underline">
-            Go to login
-          </Link>
-        </Card>
-      </div>
-    )
   }
 
   return (

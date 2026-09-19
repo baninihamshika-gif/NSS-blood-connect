@@ -29,8 +29,10 @@ interface AuthContextValue {
   loading: boolean
   /** True while a sign-in/sign-up/sign-out call is in flight. */
   actionLoading: boolean
-  /** Resolves to false when email confirmation is required (no session yet). */
-  register: (input: RegisterInput) => Promise<boolean>
+  /** Registration is immediate — the project has email confirmation
+   * disabled, so signUp() always returns a session and the caller can
+   * navigate straight to the new user's dashboard. */
+  register: (input: RegisterInput) => Promise<Profile | null>
   /** Returns the signed-in user's profile so callers can redirect by role
    * without waiting on a separate state update (the profile-loaded state
    * update from onAuthStateChange may not have landed yet when this resolves). */
@@ -137,7 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  async function register(input: RegisterInput): Promise<boolean> {
+  async function register(input: RegisterInput): Promise<Profile | null> {
     if (input.role === 'DONOR' && !input.bloodGroup) {
       throw new Error('Blood group is required for donor registration.')
     }
@@ -145,11 +147,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setActionLoading(true)
     try {
       // Registration details travel in user_metadata rather than being
-      // inserted directly here: if the project requires email confirmation,
-      // signUp() returns no session, and RLS (id = auth.uid()) would reject
-      // an insert made without one. ensureProfile() backfills from this
-      // metadata on the user's first authenticated session, whether that's
-      // immediate (confirmation off) or after they click the email link.
+      // inserted directly here, and ensureProfile() backfills the actual
+      // profiles/donor_profiles rows from it right below — simpler than
+      // inserting inline, and it reuses the same backfill path login() uses.
       const { data, error } = await supabase.auth.signUp({
         email: input.email,
         password: input.password,
@@ -165,13 +165,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
       })
       if (error) throw error
+      if (!data.user) throw new Error('Registration did not return a user.')
 
-      if (!data.session || !data.user) {
-        return false
-      }
-
-      setProfile(await ensureProfile(data.user))
-      return true
+      const newProfile = await ensureProfile(data.user)
+      setProfile(newProfile)
+      return newProfile
     } finally {
       setActionLoading(false)
     }

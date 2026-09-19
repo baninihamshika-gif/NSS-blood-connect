@@ -155,20 +155,27 @@ doesn't have Docker installed, and this flag makes that a non-issue. `SUPABASE_U
 `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically by the platform for
 every deployed function; nothing extra to configure.
 
-### Email confirmation
+### Email confirmation is disabled — registration is immediate
 
-The linked project requires email confirmation by default (`mailer_autoconfirm: false`). Because of
-this, `register()` in `src/hooks/useAuth.tsx` does **not** insert the `profiles`/`donor_profiles` rows
-at sign-up time when no session comes back — RLS requires `auth.uid()`, which doesn't exist yet for
-an unconfirmed user. Instead, registration details are stashed in Supabase Auth's `user_metadata` at
-sign-up, and `ensureProfile()` backfills the profile (and donor profile) from that metadata the first
-time the user has an authenticated session — whether that's immediately (if confirmation is ever
-turned off) or after they click the confirmation link and log in. This was verified end-to-end against
-the live project: sign-up → admin-confirm → password login → profile insert respecting RLS → a
-negative test confirming a user cannot insert a profile row under someone else's id (403 as expected).
+The linked project has `mailer_autoconfirm: true` (set via the Supabase Management API, not the
+dashboard UI, and scoped to only that one field so nothing else in the project's auth config was
+touched — verified by re-reading the config immediately after and confirming every other field, e.g.
+`sms_autoconfirm`, was unchanged). `signUp()` now always returns a session immediately, so `register()`
+in `src/hooks/useAuth.tsx` calls `ensureProfile()` — which inserts the `profiles`/`donor_profiles` rows
+from the registration details carried in Supabase Auth's `user_metadata` — right away, and the register
+page navigates straight to the new user's dashboard. No "check your email" screen, no separate
+confirm-then-login step. `ensureProfile()` itself is unchanged and still does real work: it's the same
+backfill path `login()` uses for a user whose profile row doesn't exist yet for any other reason.
+
+Verified end-to-end against the live project, through the actual UI (not just the API): registering a
+brand-new account lands on that role's dashboard within a few seconds, with a real profile row already
+present — no admin confirmation step involved.
 
 Site URL and redirect allow-list on the Supabase project are set to `http://localhost:5173` for local
-dev; update these in Auth settings before deploying elsewhere.
+dev; update these in Auth settings before deploying elsewhere. If email confirmation is ever turned back
+on for this project, registration would need `register()`/`RegisterPage` to handle the no-session case
+again — straightforward to re-add, but deliberately not kept as unused defensive code while the setting
+is off, matching this project's practice of not carrying speculative branches for states that can't occur.
 
 ### Demo accounts (local dev only)
 
@@ -754,13 +761,12 @@ API confirmed exactly the pre-existing four accounts remained — no orphaned te
   a donor who actually gives a different unit count is a real-world case this schema doesn't yet model.
 - Landing page stats (critical requests, available donors) are live Supabase counts, not mock data,
   but will read 0 until real profiles/requests exist.
-- Email confirmation is required on the linked project; see [Email confirmation](#email-confirmation)
-  above for how the register flow handles this via `user_metadata` backfill.
 - No general seed/demo data beyond the two labeled [demo accounts](#demo-accounts-local-dev-only) —
   deliberately not auto-populating the wider database, so nothing could be mistaken for real emergency
   data as the app grows.
-- Auth emails (confirmation, password reset) send through Supabase's default/shared mailer, which is
-  rate-limited and not meant for production — configure custom SMTP before launch.
+- Password-reset emails (the only auth email this project still sends, now that sign-up confirmation is
+  disabled) go through Supabase's default/shared mailer, which is rate-limited and not meant for
+  production — configure custom SMTP before launch.
 - `ProtectedRoute` only redirects on a *role mismatch* (e.g. a donor hitting `/requester/dashboard`);
   if a user is authenticated but has no profile row at all (only reachable if registration was
   interrupted in a way `ensureProfile` can't recover from — no metadata and no row), it currently lets
