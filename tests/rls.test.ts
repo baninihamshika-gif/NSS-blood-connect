@@ -198,19 +198,19 @@ describe('Row Level Security', () => {
     it('lets the owning requester update their request, but not another requester', async () => {
       const { error } = await requesterA.client
         .from('blood_requests')
-        .update({ status: 'MATCHING' })
+        .update({ location_area: 'Updated Area' })
         .eq('id', requestAId)
       expect(error).toBeNull()
 
       const { data: hijackAttempt } = await requesterB.client
         .from('blood_requests')
-        .update({ status: 'CANCELLED' })
+        .update({ location_area: 'Hijacked' })
         .eq('id', requestAId)
         .select()
       expect(hijackAttempt).toEqual([])
 
-      const { data: unchanged } = await requesterA.client.from('blood_requests').select('status').eq('id', requestAId).single()
-      expect(unchanged?.status).toBe('MATCHING')
+      const { data: unchanged } = await requesterA.client.from('blood_requests').select('location_area').eq('id', requestAId).single()
+      expect(unchanged?.location_area).toBe('Updated Area')
     })
 
     it('rejects units_required outside 1-50 at the database level (Phase 3 form validation is defense in depth, not the boundary)', async () => {

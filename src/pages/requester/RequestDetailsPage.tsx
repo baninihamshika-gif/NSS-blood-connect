@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Calendar, Droplet, MapPin, Search, Users } from 'lucide-react'
+import { ArrowLeft, Calendar, CheckCircle2, Droplet, MapPin, Search, Users, XCircle } from 'lucide-react'
 import { useBloodRequestDetails } from '@/hooks/useBloodRequestDetails'
 import { useFindMatches } from '@/hooks/useFindMatches'
 import { useDonorMatches } from '@/hooks/useDonorMatches'
+import { useRequestStatusHistory } from '@/hooks/useRequestStatusHistory'
+import { useUpdateRequestStatus } from '@/hooks/useUpdateRequestStatus'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -11,16 +13,74 @@ import { Spinner } from '@/components/ui/Spinner'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { DonorMatchCard } from '@/components/matching/DonorMatchCard'
+import { RequestTimeline } from '@/components/requests/RequestTimeline'
 import { priorityTone, statusLabel, statusTone } from '@/lib/utilities/requestDisplay'
 import type { RequestStatus } from '@/types/database'
 
 const CLOSED_STATUSES: RequestStatus[] = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'FULFILLED']
+const CANCELLABLE_STATUSES: RequestStatus[] = ['CREATED', 'MATCHING', 'CONTACTING_DONORS', 'PARTIALLY_FULFILLED', 'FULFILLED']
+const COMPLETABLE_STATUSES: RequestStatus[] = ['FULFILLED', 'PARTIALLY_FULFILLED']
 
 function formatUtcTimestamp(value: string) {
   return new Date(value).toLocaleString(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
+}
+
+function RequestActions({ requestId, requestStatus }: { requestId: string; requestStatus: RequestStatus }) {
+  const updateStatus = useUpdateRequestStatus(requestId)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState<'CANCELLED' | 'COMPLETED' | null>(null)
+
+  const canCancel = CANCELLABLE_STATUSES.includes(requestStatus)
+  const canComplete = COMPLETABLE_STATUSES.includes(requestStatus)
+  if (!canCancel && !canComplete) return null
+
+  const onAction = async (status: 'CANCELLED' | 'COMPLETED') => {
+    setError(null)
+    setPending(status)
+    try {
+      await updateStatus.mutateAsync(status)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update this request. Please try again.')
+    } finally {
+      setPending(null)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {error && <ErrorMessage message={error} />}
+      <div className="flex gap-2">
+        {canComplete && (
+          <Button
+            variant="primary"
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            isLoading={pending === 'COMPLETED'}
+            disabled={updateStatus.isPending && pending !== 'COMPLETED'}
+            onClick={() => onAction('COMPLETED')}
+          >
+            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            Mark Completed
+          </Button>
+        )}
+        {canCancel && (
+          <Button
+            variant="outline"
+            size="sm"
+            isLoading={pending === 'CANCELLED'}
+            disabled={updateStatus.isPending && pending !== 'CANCELLED'}
+            onClick={() => onAction('CANCELLED')}
+          >
+            <XCircle className="h-4 w-4" aria-hidden="true" />
+            Cancel Request
+          </Button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function MatchingSection({ requestId, requestStatus }: { requestId: string; requestStatus: RequestStatus }) {
@@ -38,6 +98,8 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
     }
   }
 
+  const acceptedCount = matches?.filter((m) => m.match_status === 'ACCEPTED').length ?? 0
+
   return (
     <div>
       <div className="mb-3 flex items-center justify-between gap-4">
@@ -52,10 +114,9 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
 
       {findError && <ErrorMessage message={findError} />}
 
-      {findMatches.isSuccess && !findError && (
+      {matches && matches.length > 0 && (
         <p className="mb-3 text-sm text-gray-600">
-          Considered {findMatches.data.candidatesConsidered} eligible candidate(s) — {findMatches.data.matchCount}{' '}
-          matched.
+          {matches.length} donor{matches.length === 1 ? '' : 's'} contacted — {acceptedCount} accepted so far.
         </p>
       )}
 
@@ -75,6 +136,21 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function TimelineSection({ requestId, currentStatus }: { requestId: string; currentStatus: RequestStatus }) {
+  const { data: history, isLoading, isError } = useRequestStatusHistory(requestId)
+
+  return (
+    <div>
+      <h2 className="mb-3 text-lg font-semibold text-gray-900">Request Tracking</h2>
+      <Card>
+        {isLoading && <Spinner label="Loading timeline…" />}
+        {isError && <ErrorMessage message="Could not load the status timeline. Please refresh." />}
+        {!isLoading && !isError && <RequestTimeline history={history ?? []} currentStatus={currentStatus} />}
+      </Card>
     </div>
   )
 }
@@ -152,12 +228,10 @@ export function RequestDetailsPage() {
               </div>
             </dl>
 
-            <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-600">
-              A full status timeline isn't live yet — matching and donor responses are, so you can already find
-              candidates and see whether they've accepted below.
-            </div>
+            <RequestActions requestId={request.id} requestStatus={request.status} />
           </Card>
 
+          <TimelineSection requestId={request.id} currentStatus={request.status} />
           <MatchingSection requestId={request.id} requestStatus={request.status} />
         </>
       )}

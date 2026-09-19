@@ -189,22 +189,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Real, honest status transition (CREATED -> MATCHING) with an audit
-    // row — not the full state machine (Phase 6), just not lying about what
-    // this run actually did.
+    // Real, honest status transition (CREATED -> MATCHING). The audit row is
+    // no longer written here — a database trigger (Phase 6, migration 0006)
+    // logs every real status change uniformly, regardless of which code path
+    // caused it, so this function doesn't need to know about that table.
     if (request.status === 'CREATED') {
       const { error: statusError } = await admin
         .from('blood_requests')
         .update({ status: 'MATCHING' })
         .eq('id', requestId)
       if (statusError) throw statusError
-      const { error: historyError } = await admin.from('request_status_history').insert({
-        request_id: requestId,
-        status: 'MATCHING',
-        changed_by: caller.id,
-        notes: `Matching run found ${topCandidates.length} candidate(s).`,
-      })
-      if (historyError) throw historyError
     }
 
     return json({

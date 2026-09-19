@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { priorityTone } from '@/lib/utilities/requestDisplay'
+import { priorityTone, statusLabel, statusTone } from '@/lib/utilities/requestDisplay'
 
 function AcceptedState({ hospitalName }: { hospitalName: string | null }) {
   return (
@@ -125,7 +125,10 @@ export function DonorRequestDetailsPage() {
                   </p>
                 </div>
               </div>
-              <Badge tone={priorityTone[match.blood_requests.priority]}>{match.blood_requests.priority}</Badge>
+              <div className="flex flex-col items-end gap-2">
+                <Badge tone={priorityTone[match.blood_requests.priority]}>{match.blood_requests.priority}</Badge>
+                <Badge tone={statusTone[match.blood_requests.status]}>{statusLabel[match.blood_requests.status]}</Badge>
+              </div>
             </div>
 
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">

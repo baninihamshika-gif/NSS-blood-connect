@@ -44,7 +44,7 @@ src/
 │   ├── dashboard/       dashboard-specific widgets (Phase 9)
 │   ├── donor/           donor-specific components (reserved; donor pages are self-contained so far)
 │   ├── requester/       requester-specific components (reserved; requester pages are self-contained so far)
-│   ├── requests/        RequestListItem (shared by request history + dashboard)
+│   ├── requests/        RequestListItem, RequestTimeline (shared across request pages)
 │   ├── matching/        match cards (Phase 4+)
 │   ├── notifications/   notification UI (Phase 8)
 │   └── map/             Leaflet map components (Phase 8)
@@ -104,6 +104,21 @@ Migrations live in `supabase/migrations/` and are numbered in apply order:
    no client UPDATE policy (Phase 1 design — see 0003), so this is the narrow, audited path a donor's
    accept/decline can affect it through, rather than reopening general client write access to that
    table. A second trigger sets `responded_at` from the server clock, not a client-supplied value.
+6. `0006_request_status_state_machine.sql` — Phase 6: the controlled status state machine. A `BEFORE
+   UPDATE` trigger on `blood_requests` rejects illegal transitions and restricts direct client updates
+   to only `CANCELLED`/`COMPLETED` (every other transition is system-driven). An `AFTER UPDATE` trigger
+   auto-logs every real status change to `request_status_history`. Extends 0005's response-sync
+   trigger so an `ACCEPTED` response also drives the request toward `PARTIALLY_FULFILLED`/`FULFILLED`.
+   A further trigger auto-creates `donation_records` for each accepted donor when a request reaches
+   `COMPLETED`.
+7. `0007_fix_internal_status_transitions.sql` — Phase 6 fix: 0006's service-role check
+   (`auth.role() = 'service_role'`) doesn't distinguish a genuinely-internal trigger-driven update from
+   a client's own request, because `auth.role()` reflects the *original caller's* JWT for the whole
+   transaction, not a `SECURITY DEFINER` function's elevated privilege — every real auto-fulfillment
+   update was being rejected as if a client had attempted it directly. Fixed with a transaction-local
+   GUC flag (`app.bypass_status_restriction`) that only trusted internal trigger code sets, immediately
+   before a privileged update; no RPC exposes it to clients. Found by the Phase 6 test suite, same
+   "add a migration, don't rewrite history" pattern as 0004 fixing 0003.
 
 Apply with the Supabase CLI:
 
@@ -114,7 +129,7 @@ supabase db push
 
 Or paste each file's contents into the Supabase SQL editor in order.
 
-**Status:** a live Supabase project is provisioned and linked; all 5 migrations are applied. `.env`
+**Status:** a live Supabase project is provisioned and linked; all 7 migrations are applied. `.env`
 is populated locally (gitignored — never commit it). If you need to point this project at a
 different Supabase instance, update `.env` and re-run `supabase link` + `supabase db push`.
 
@@ -235,7 +250,14 @@ compatible + available + eligible donor matches, not the incompatible/unavailabl
 ones), the `CREATED` → `MATCHING` status transition with its `request_status_history` row, and
 idempotency (re-running does not create a duplicate `donor_matches` row).
 
-68 tests total, all passing against the live project.
+`tests/request-state-machine.test.ts` (9 tests) covers Phase 6's state machine against the live
+database: rejects a client setting a system-only status value, rejects an illegal edge even for
+service role, allows the legal client transition `CREATED` → `CANCELLED`, rejects any transition out
+of a terminal state, confirms the auto-history-logging trigger, and drives a full real scenario —
+two donors accept, request auto-progresses `MATCHING` → `PARTIALLY_FULFILLED` → `FULFILLED`, the
+requester completes it, and `donation_records` rows appear for both donors.
+
+77 tests total, all passing against the live project.
 
 ## Phase Plan
 
@@ -249,7 +271,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 3 | Requester module: real dashboard (own stats + recent requests), create request (normal/emergency), request history/details | **Done** |
 | 4 | Matching engine: server-side matching (Edge Function), transparent ranking, `donor_matches` generation | **Done** |
 | 5 | Donor request & response: notify donors on match, donor sees request, accept/decline | **Done** |
-| 6 | Request tracking: status state machine, `request_status_history`, timeline UI | Not started |
+| 6 | Request tracking: status state machine, `request_status_history`, timeline UI, completion/cancellation, partial fulfillment | **Done** |
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | Not started |
 | 8 | Realtime, notifications, map (Leaflet/OSM) | Not started |
 | 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | Not started |
@@ -351,10 +373,65 @@ confirmation") matching the required reference UI — and the requester's match 
 fabricated ETA or a `[VIEW DIRECTIONS]` button — those need real location/routing data (Phase 8) and
 would otherwise be exactly the kind of invented data the project's rules prohibit.
 
-## Known Limitations (through Phase 5)
+## Request Tracking (Phase 6)
 
-- Request creation (normal + emergency), history, details, matching, donor notification, and
-  accept/decline are all live; the status-history timeline and the map are still later phases.
+### The state machine
+
+Enforced by database triggers on `blood_requests` (migrations `0006`/`0007`), not just client-side
+convention — this is the real authorization boundary, the same way RLS is for table access:
+
+```
+CREATED ──▶ MATCHING ──▶ PARTIALLY_FULFILLED ──▶ FULFILLED ──▶ COMPLETED
+  │            │                 │                   │
+  └────────────┴─────────────────┴───────────────────┴──▶ CANCELLED
+```
+
+(`CONTACTING_DONORS` is a legal node in the graph but isn't currently reachable — see
+[Known Limitations](#known-limitations-through-phase-6) below.)
+
+- A **client update** (the requester, via their own RLS-permitted update) may only ever set the new
+  status to `CANCELLED` or `COMPLETED` — the two genuinely user-driven actions. Attempting to set
+  `MATCHING`/`PARTIALLY_FULFILLED`/`FULFILLED` directly is rejected, even though the requester owns
+  the row — otherwise they could fake progress without any real matching or donor acceptance behind
+  it.
+- Every transition, from whichever path caused it, is validated against the graph above — an illegal
+  edge (e.g. `CREATED` straight to `COMPLETED`) is rejected even for trusted server-side code.
+- `COMPLETED`, `CANCELLED`, and `EXPIRED` are terminal — no further transitions are accepted from
+  them.
+
+### Automatic progression from donor acceptances
+
+"1 accepted donor = 1 unit" is a documented simplification (the schema doesn't yet capture a
+per-donor unit pledge). When an `ACCEPTED` response brings the accepted-donor count to somewhere
+between 0 and `units_required`, the request moves to `PARTIALLY_FULFILLED`; once it reaches or
+exceeds `units_required`, it moves straight to `FULFILLED` (skipping `PARTIALLY_FULFILLED` if a
+single acceptance covers the whole requirement). Status only ever moves forward automatically, never
+backward.
+
+### Completion closes the loop back to Phase 2
+
+Marking a `FULFILLED`/`PARTIALLY_FULFILLED` request `COMPLETED` triggers creation of a
+`donation_records` row for every donor whose match is `ACCEPTED` on that request — which is what
+finally gives the donor dashboard's "Donation History" (built in Phase 2, correctly empty ever
+since) real data. Verified end-to-end through the actual UI, not just the database: create a request
+→ match → donor accepts → auto-`FULFILLED` → requester clicks "Mark Completed" → the donor's
+dashboard shows a real completed donation.
+
+### Timeline UI
+
+`RequestTimeline` renders the formal state-machine path (from `request_status_history`, the one
+reliable source of truth) as a checkmark list with real timestamps — adapting the reference mockup's
+checkmark/circle visual structure to this project's actual status names rather than the reference's
+illustrative ones (e.g. no distinct "12 Donors Contacted" / "3 Donors Responded" timeline *entries*,
+since those aren't state-machine transitions). That information isn't dropped, though — it's shown
+as a live, always-accurate summary line ("N donors contacted — M accepted so far") computed from
+`donor_matches` at render time, rather than frozen into a history row that could drift from reality.
+
+## Known Limitations (through Phase 6)
+
+- Request creation (normal + emergency), history, details, matching, donor notification/response, and
+  the full status-tracking lifecycle (auto-fulfillment, completion, cancellation) are all live; only
+  the map (Phase 8) and the emergency cascade's wave/radius-expansion behavior (Phase 7) remain.
 - The emergency request form creates the `blood_requests` row (type `EMERGENCY`, priority
   `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — running
   the real matching engine from the request details page produces real numbers instead. Wave-based
@@ -363,9 +440,10 @@ would otherwise be exactly the kind of invented data the project's rules prohibi
   bug, just sparse upstream data: no location-capture UI exists yet (Phase 8), so `approx_lat/lng` is
   null everywhere. It's fully implemented and will start discriminating automatically once that data
   exists — no matching-engine changes needed later.
-- Accepting a match doesn't yet reveal donor/requester contact info to each other — intentional, see
-  [Donor Response Flow](#donor-response-flow-phase-5) above; that needs whatever "confirmed further"
-  step Phase 6 introduces, matching the reference UI's own "Contact: Available after confirmation."
+- Accepting a match, and even completing a request, still doesn't reveal donor/requester contact info
+  to each other — intentional, matching the reference UI's own "Contact: Available after confirmation"
+  literally shown on the *accepted* state, not just before it. No phase in the spec explicitly owns
+  "build the actual contact-reveal mechanism," so it stays deferred rather than guessed at.
 - No decline-reason capture, no re-notifying other candidates when one donor declines, and no
   "sufficient donors found, stop notifying" logic — those are Emergency Cascade behaviors (Phase 7),
   not this phase's "one donor, one response" scope.
@@ -373,10 +451,11 @@ would otherwise be exactly the kind of invented data the project's rules prohibi
   click, not automatically on request creation — a requester has to press "Find Matching Donors."
   Nothing in the spec requires auto-triggering, and doing so silently would make matching runs harder
   to reason about while testing; revisit if a later phase wants it automatic.
-- Request details currently shows a single current status badge, not the full timeline UI from the
-  reference design (✓ Request Created → ✓ Matching Started → ...) — that's explicitly Phase 6
-  (`request_status_history` + timeline UI).
-- No edit/cancel on an existing request yet — Phase 6 ("Completion and cancellation").
+- `CONTACTING_DONORS` is a legal node in the state machine graph but nothing currently transitions
+  into it — this implementation's `match-donors` notifies donors in the same step as creating the
+  match (see [Donor Response Flow](#donor-response-flow-phase-5)), so there's no separate "matched but
+  not yet contacted" moment to represent. Kept in the graph for schema completeness / in case a future
+  phase introduces a real gap between the two.
 - The requester dashboard's stat tiles (Active/Emergency/Total/Fulfilled) are computed client-side
   from the requester's own `useMyBloodRequests()` result, not a separate aggregate query — fine at
   current scale; revisit with a dedicated count query if a requester's request list ever gets large.
@@ -385,9 +464,8 @@ would otherwise be exactly the kind of invented data the project's rules prohibi
   (The database itself doesn't block a donor from updating their own `donor_profiles.blood_group` —
   RLS is row-level, not column-level, and there's no real verification workflow to gate it against
   yet since there's no Admin role. This is a UI-level friction choice, not a hard constraint.)
-- `donation_records` has no write path from the UI yet (no donation-completion flow exists until
-  Phase 6), so "Donation History" is a real, correctly-empty query — it'll show data once Phase 6
-  lands, without needing further changes to the donor dashboard itself.
+- "1 accepted donor = 1 unit" (see [Request Tracking](#request-tracking-phase-6)) is a simplification;
+  a donor who actually gives a different unit count is a real-world case this schema doesn't yet model.
 - Landing page stats (critical requests, available donors) are live Supabase counts, not mock data,
   but will read 0 until real profiles/requests exist.
 - Email confirmation is required on the linked project; see [Email confirmation](#email-confirmation)
