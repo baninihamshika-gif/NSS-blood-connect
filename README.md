@@ -64,11 +64,12 @@ src/
 └── routes/               ProtectedRoute
 
 supabase/
-├── migrations/           numbered SQL migrations (schema, triggers, RLS)
+├── migrations/            numbered SQL migrations (schema, triggers, RLS)
 └── functions/
-    ├── match-donors/     deployed — matching engine (Phase 4)
-    ├── emergency-search/ reserved for the cascade (Phase 7)
-    └── notifications/    reserved for donor notification (Phase 5)
+    ├── _shared/           matching-logic.ts — pure scoring/compatibility/cascade logic, unit-tested
+    │                      directly and imported unmodified by both functions below
+    ├── match-donors/      deployed — single-pass matching engine (Phase 4)
+    └── emergency-search/  deployed — wave/radius cascade (Phase 7)
 ```
 
 ## Environment Variables
@@ -119,6 +120,10 @@ Migrations live in `supabase/migrations/` and are numbered in apply order:
    GUC flag (`app.bypass_status_restriction`) that only trusted internal trigger code sets, immediately
    before a privileged update; no RPC exposes it to clients. Found by the Phase 6 test suite, same
    "add a migration, don't rewrite history" pattern as 0004 fixing 0003.
+8. `0008_emergency_cascade.sql` — Phase 7: adds `blood_requests.cascade_tier_index` (nullable), tracking
+   how far the emergency cascade has progressed through its radius tiers for a given request. Not
+   protected beyond the existing owner-update policy — tampering with it can't cause anything unsafe,
+   since `emergency-search` always excludes already-matched donors regardless of what this column says.
 
 Apply with the Supabase CLI:
 
@@ -129,22 +134,26 @@ supabase db push
 
 Or paste each file's contents into the Supabase SQL editor in order.
 
-**Status:** a live Supabase project is provisioned and linked; all 7 migrations are applied. `.env`
+**Status:** a live Supabase project is provisioned and linked; all 8 migrations are applied. `.env`
 is populated locally (gitignored — never commit it). If you need to point this project at a
 different Supabase instance, update `.env` and re-run `supabase link` + `supabase db push`.
 
 ### Edge Functions
 
-`match-donors` is deployed to the linked project. Redeploy after changes with:
+`match-donors` and `emergency-search` are deployed to the linked project; both import
+`_shared/matching-logic.ts`. Redeploy after changes with:
 
 ```
 supabase functions deploy match-donors --use-api
+supabase functions deploy emergency-search --use-api
 ```
 
-`--use-api` bundles server-side instead of via Docker — this machine doesn't have Docker installed,
-and this flag makes that a non-issue. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
-`SUPABASE_SERVICE_ROLE_KEY` are injected automatically by the platform for every deployed function;
-nothing extra to configure.
+Redeploy **both** after touching `_shared/matching-logic.ts`, since each function bundles its own
+copy of whatever it imports at deploy time — editing the shared file alone doesn't update either
+already-deployed function. `--use-api` bundles server-side instead of via Docker — this machine
+doesn't have Docker installed, and this flag makes that a non-issue. `SUPABASE_URL`,
+`SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically by the platform for
+every deployed function; nothing extra to configure.
 
 ### Email confirmation
 
@@ -257,7 +266,17 @@ of a terminal state, confirms the auto-history-logging trigger, and drives a ful
 two donors accept, request auto-progresses `MATCHING` → `PARTIALLY_FULFILLED` → `FULFILLED`, the
 requester completes it, and `donation_records` rows appear for both donors.
 
-77 tests total, all passing against the live project.
+`tests/emergency-cascade.test.ts` (9 tests) is a live integration test against the **deployed**
+`emergency-search` Edge Function, using synthetic donor/request coordinates (1° latitude ≈ 111km) so
+radius-tier progression is actually exercised now, despite real location-capture UI not existing yet
+(Phase 8): ownership rejection, wave-by-wave radius expansion (10km → 25km → 50km, each wave finding
+only the newly-in-range donor), a donor placed beyond every tier that's never matched at any wave,
+exhaustion once all tiers are tried, idempotency after exhaustion, timeout-driven expiry of a
+backdated `NOTIFIED` match, the `CREATED` → `MATCHING` transition, and stop-when-fulfilled (no further
+matches created even with other compatible donors available). Two real bugs were caught by this
+suite, not by inspection — see [Emergency Cascade](#emergency-cascade-phase-7) below.
+
+95 tests total, all passing against the live project.
 
 ## Phase Plan
 
@@ -272,7 +291,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 4 | Matching engine: server-side matching (Edge Function), transparent ranking, `donor_matches` generation | **Done** |
 | 5 | Donor request & response: notify donors on match, donor sees request, accept/decline | **Done** |
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI, completion/cancellation, partial fulfillment | **Done** |
-| 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | Not started |
+| 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | **Done** |
 | 8 | Realtime, notifications, map (Leaflet/OSM) | Not started |
 | 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | Not started |
 | 10 | Final QA/hardening, docs | Not started |
@@ -427,30 +446,87 @@ since those aren't state-machine transitions). That information isn't dropped, t
 as a live, always-accurate summary line ("N donors contacted — M accepted so far") computed from
 `donor_matches` at render time, rather than frozen into a history row that could drift from reality.
 
-## Known Limitations (through Phase 6)
+## Emergency Cascade (Phase 7)
 
-- Request creation (normal + emergency), history, details, matching, donor notification/response, and
-  the full status-tracking lifecycle (auto-fulfillment, completion, cancellation) are all live; only
-  the map (Phase 8) and the emergency cascade's wave/radius-expansion behavior (Phase 7) remain.
-- The emergency request form creates the `blood_requests` row (type `EMERGENCY`, priority
-  `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — running
-  the real matching engine from the request details page produces real numbers instead. Wave-based
-  expansion if too few candidates are found is the cascade (Phase 7), not yet implemented.
-- The distance match factor is currently neutral for almost every real donor/request pair — not a
-  bug, just sparse upstream data: no location-capture UI exists yet (Phase 8), so `approx_lat/lng` is
-  null everywhere. It's fully implemented and will start discriminating automatically once that data
-  exists — no matching-engine changes needed later.
+Implemented as a second Edge Function, `emergency-search`, sharing `_shared/matching-logic.ts` with
+`match-donors` so the same compatibility/eligibility/scoring rules apply — the cascade doesn't
+reimplement matching, it adds what a single `match-donors` pass deliberately doesn't do: waves,
+timeouts, and radius expansion. Same trust model throughout: the client sends only a `requestId`.
+
+### Radius tiers and waves
+
+`EMERGENCY_CASCADE_RADII_KM = [10, 25, 50]` (km) — a documented, configurable business-rule sequence,
+not a medical one. Each invocation walks forward from `blood_requests.cascade_tier_index` (persisted
+so a later call resumes rather than re-scanning), notifying every untried eligible donor within the
+first tier that has one. A `null` donor/request distance counts as "within every tier" (consistent
+with the neutral-if-unknown treatment already used in scoring), so this is fully exercised today via
+the test suite's synthetic coordinates, even though almost no real donor has a location yet (Phase 8).
+One call = one step forward (find more within the current tier, or expand to the next one) — there's
+no background polling; the requester presses "Continue Emergency Search" to advance.
+
+### Timeout handling
+
+A `NOTIFIED` match older than `CASCADE_WAVE_TIMEOUT_MINUTES = 30` (a documented placeholder, not an
+operationally-reviewed SLA) is marked `EXPIRED` at the start of every cascade invocation — lazily, on
+next call, rather than via a background job (no scheduling infrastructure like `pg_cron` exists, and
+adding one wasn't clearly required). This frees that donor's "slot" without waiting on them
+indefinitely, and an expired donor is never re-notified for the same request (still counted as
+"already tried").
+
+### Stopping conditions
+
+Every response includes `done` and, when true, a `reason`: `fulfilled` (enough donors have accepted —
+matches the state machine's own fulfillment trigger, this function doesn't duplicate that logic, just
+defers to it), `closed` (the request reached a terminal status some other way, e.g. the requester
+cancelled it mid-cascade), or `exhausted` (every tier examined, still short). None of these loop
+forever or fabricate progress — `exhausted` is reported honestly, with the UI suggesting the
+requester's real options (cancel, wait, or leave it open) rather than pretending the search continues.
+
+### Two real bugs the test suite caught
+
+- The `exhausted`/`fulfilled`/`closed` early-return branches didn't include `timedOutExpired` in their
+  JSON response, even though the expiry side-effect had already happened — an isolated debug script
+  showed expiry working correctly, but the *reported* count was silently wrong whenever a call reached
+  one of those branches instead of the "new wave" success path. Now every response branch reports it.
+- `emergency-search` never made the same `CREATED` → `MATCHING` transition `match-donors` makes,
+  discovered by noticing the reference-style timeline UI still showed "Matching" as pending even after
+  real donors had been found and notified. Fixed to match `match-donors`'s behavior exactly.
+
+### A UI bug worth calling out
+
+The "Activate" vs. "Continue Emergency Search" button label was originally driven by the current
+browser session's mutation state — which resets on page reload, so a requester who'd already run the
+cascade and came back later would misleadingly see "Activate" again. Fixed to read
+`blood_requests.cascade_tier_index` (real server-side progress) instead.
+
+## Known Limitations (through Phase 7)
+
+- Request creation (normal + emergency), history, details, matching, the emergency cascade, donor
+  notification/response, and the full status-tracking lifecycle (auto-fulfillment, completion,
+  cancellation) are all live; only the map and real location-capture UI (Phase 8) remain.
+- The distance match factor (and the cascade's radius tiers) are currently neutral/inert for almost
+  every real donor/request pair — not a bug, just sparse upstream data: no location-capture UI exists
+  yet (Phase 8), so `approx_lat/lng` is null everywhere in practice. Both are fully implemented and
+  verified against synthetic coordinates in tests; they'll start discriminating automatically once
+  real location data exists — no matching-engine or cascade changes needed later.
 - Accepting a match, and even completing a request, still doesn't reveal donor/requester contact info
   to each other — intentional, matching the reference UI's own "Contact: Available after confirmation"
   literally shown on the *accepted* state, not just before it. No phase in the spec explicitly owns
   "build the actual contact-reveal mechanism," so it stays deferred rather than guessed at.
-- No decline-reason capture, no re-notifying other candidates when one donor declines, and no
-  "sufficient donors found, stop notifying" logic — those are Emergency Cascade behaviors (Phase 7),
-  not this phase's "one donor, one response" scope.
-- `match-donors` is invoked directly from the client via `supabase.functions.invoke` on a button
-  click, not automatically on request creation — a requester has to press "Find Matching Donors."
-  Nothing in the spec requires auto-triggering, and doing so silently would make matching runs harder
-  to reason about while testing; revisit if a later phase wants it automatic.
+- No decline-reason capture, and the cascade doesn't immediately react to a single decline mid-wave by
+  notifying a replacement — it re-evaluates candidacy (including freeing up "slots" from declines and
+  timeouts) the next time the requester invokes it, not via a live event trigger. Consistent with
+  "one call = one step forward," not silent background activity.
+- `match-donors` and `emergency-search` are both invoked directly from the client via
+  `supabase.functions.invoke` on a button click, not automatically on request creation — a requester
+  has to press "Find Matching Donors" or "Activate/Continue Emergency Search." Nothing in the spec
+  requires auto-triggering, and doing so silently would make matching runs harder to reason about
+  while testing; revisit if a later phase wants it automatic.
+- Cascade timeout detection is lazy (evaluated at the start of the next `emergency-search` invocation),
+  not proactive — a stale `NOTIFIED` match only actually flips to `EXPIRED` when the requester next
+  presses "Continue Emergency Search," not the instant `CASCADE_WAVE_TIMEOUT_MINUTES` elapses. No
+  scheduling infrastructure (`pg_cron` or similar) exists to make this proactive, and adding one wasn't
+  clearly required by the spec.
 - `CONTACTING_DONORS` is a legal node in the state machine graph but nothing currently transitions
   into it — this implementation's `match-donors` notifies donors in the same step as creating the
   match (see [Donor Response Flow](#donor-response-flow-phase-5)), so there's no separate "matched but

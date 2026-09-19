@@ -18,7 +18,7 @@ import {
   MATCH_CANDIDATE_LIMIT,
   type AvailabilityStatus,
   type BloodGroup,
-} from './matching-logic.ts'
+} from '../_shared/matching-logic.ts'
 
 const ALL_BLOOD_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-']
 const CLOSED_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'EXPIRED', 'FULFILLED'])

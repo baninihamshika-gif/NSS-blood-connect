@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Calendar, CheckCircle2, Droplet, MapPin, Search, Users, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, Droplet, MapPin, Search, Users, XCircle } from 'lucide-react'
 import { useBloodRequestDetails } from '@/hooks/useBloodRequestDetails'
 import { useFindMatches } from '@/hooks/useFindMatches'
+import { useEmergencyCascade } from '@/hooks/useEmergencyCascade'
 import { useDonorMatches } from '@/hooks/useDonorMatches'
 import { useRequestStatusHistory } from '@/hooks/useRequestStatusHistory'
 import { useUpdateRequestStatus } from '@/hooks/useUpdateRequestStatus'
@@ -15,7 +16,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { DonorMatchCard } from '@/components/matching/DonorMatchCard'
 import { RequestTimeline } from '@/components/requests/RequestTimeline'
 import { priorityTone, statusLabel, statusTone } from '@/lib/utilities/requestDisplay'
-import type { RequestStatus } from '@/types/database'
+import type { RequestStatus, RequestType } from '@/types/database'
 
 const CLOSED_STATUSES: RequestStatus[] = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'FULFILLED']
 const CANCELLABLE_STATUSES: RequestStatus[] = ['CREATED', 'MATCHING', 'CONTACTING_DONORS', 'PARTIALLY_FULFILLED', 'FULFILLED']
@@ -83,11 +84,67 @@ function RequestActions({ requestId, requestStatus }: { requestId: string; reque
   )
 }
 
-function MatchingSection({ requestId, requestStatus }: { requestId: string; requestStatus: RequestStatus }) {
+const CASCADE_REASON_MESSAGE: Record<string, string> = {
+  fulfilled: 'All units confirmed — no further search needed.',
+  closed: 'This request is no longer active.',
+  exhausted: 'Every search radius has been tried without full fulfillment. You can cancel, wait for more responses, or keep the request open in case a donor becomes available later.',
+}
+
+function EmergencySearchControl({ requestId, cascadeTierIndex }: { requestId: string; cascadeTierIndex: number | null }) {
+  const cascade = useEmergencyCascade(requestId)
+  const [error, setError] = useState<string | null>(null)
+
+  const onRun = async () => {
+    setError(null)
+    try {
+      await cascade.mutateAsync()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not run the emergency search. Please try again.')
+    }
+  }
+
+  // Reflects actual server-side progress (cascade_tier_index on the
+  // request), not just this session's mutation state — otherwise a page
+  // reload after already running the cascade would misleadingly offer
+  // "Activate" again instead of "Continue."
+  const alreadyStarted = cascadeTierIndex !== null || Boolean(cascade.data)
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Button variant="danger" size="sm" onClick={onRun} isLoading={cascade.isPending} className="w-fit">
+        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+        {alreadyStarted ? 'Continue Emergency Search' : 'Activate Emergency Search'}
+      </Button>
+      {error && <ErrorMessage message={error} />}
+      {cascade.data && (
+        <p className="text-sm text-gray-600">
+          {cascade.data.done
+            ? (CASCADE_REASON_MESSAGE[cascade.data.reason ?? ''] ?? 'Search stopped.')
+            : `Wave ${(cascade.data.wave ?? 0) + 1}: expanded to ${cascade.data.radiusKm} km, notified ${cascade.data.newMatches} new donor(s).`}
+          {cascade.data.timedOutExpired > 0 &&
+            ` (${cascade.data.timedOutExpired} unresponsive match${cascade.data.timedOutExpired === 1 ? '' : 'es'} timed out and freed up.)`}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function MatchingSection({
+  requestId,
+  requestStatus,
+  requestType,
+  cascadeTierIndex,
+}: {
+  requestId: string
+  requestStatus: RequestStatus
+  requestType: RequestType
+  cascadeTierIndex: number | null
+}) {
   const findMatches = useFindMatches(requestId)
   const { data: matches, isLoading, isError } = useDonorMatches(requestId)
   const [findError, setFindError] = useState<string | null>(null)
   const canMatch = !CLOSED_STATUSES.includes(requestStatus)
+  const isEmergency = requestType === 'EMERGENCY'
 
   const onFindMatches = async () => {
     setFindError(null)
@@ -104,13 +161,19 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
     <div>
       <div className="mb-3 flex items-center justify-between gap-4">
         <h2 className="text-lg font-semibold text-gray-900">Matched Donors</h2>
-        {canMatch && (
+        {canMatch && !isEmergency && (
           <Button size="sm" onClick={onFindMatches} isLoading={findMatches.isPending}>
             <Search className="h-4 w-4" aria-hidden="true" />
             Find Matching Donors
           </Button>
         )}
       </div>
+
+      {canMatch && isEmergency && (
+        <div className="mb-3">
+          <EmergencySearchControl requestId={requestId} cascadeTierIndex={cascadeTierIndex} />
+        </div>
+      )}
 
       {findError && <ErrorMessage message={findError} />}
 
@@ -126,7 +189,11 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
         <EmptyState
           icon={Users}
           title="No matched donors yet"
-          description="Run donor matching to find eligible candidates. Matches are software-suggested and don't imply medical certainty — contact details become available once accepted matches are confirmed further, which isn't built yet."
+          description={
+            isEmergency
+              ? 'Activate the emergency search to find eligible candidates in expanding waves. Matches are software-suggested and don\'t imply medical certainty — contact details become available once accepted matches are confirmed further, which isn\'t built yet.'
+              : 'Run donor matching to find eligible candidates. Matches are software-suggested and don\'t imply medical certainty — contact details become available once accepted matches are confirmed further, which isn\'t built yet.'
+          }
         />
       )}
       {!isLoading && !isError && matches && matches.length > 0 && (
@@ -232,7 +299,12 @@ export function RequestDetailsPage() {
           </Card>
 
           <TimelineSection requestId={request.id} currentStatus={request.status} />
-          <MatchingSection requestId={request.id} requestStatus={request.status} />
+          <MatchingSection
+            requestId={request.id}
+            requestStatus={request.status}
+            requestType={request.request_type}
+            cascadeTierIndex={request.cascade_tier_index}
+          />
         </>
       )}
     </div>

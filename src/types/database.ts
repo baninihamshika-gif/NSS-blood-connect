@@ -67,6 +67,8 @@ export type BloodRequest = {
   status: RequestStatus
   approx_lat: number | null
   approx_lng: number | null
+  /** Emergency cascade progress (Phase 7) — index into EMERGENCY_CASCADE_RADII_KM already examined, or null if never run. */
+  cascade_tier_index: number | null
   created_at: string
   updated_at: string
 }

@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest'
 import {
   calculateDistanceKm,
   calculateMatchScore,
+  CASCADE_WAVE_TIMEOUT_MINUTES,
+  EMERGENCY_CASCADE_RADII_KM,
   isBloodGroupCompatible,
+  isNotifiedMatchTimedOut,
   isWithinEligibilityWindow,
+  isWithinRadius,
   MATCH_WEIGHTS,
   MAX_MATCH_DISTANCE_KM,
   MIN_DAYS_SINCE_LAST_DONATION,
+  nextCascadeTierIndex,
   type BloodGroup,
-} from '../supabase/functions/match-donors/matching-logic'
+} from '../supabase/functions/_shared/matching-logic'
 
 const ALL_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-']
 
@@ -215,6 +220,56 @@ describe('MATCH_WEIGHTS', () => {
       availability: 15,
       donationTiming: 10,
       responseHistory: 10,
+    })
+  })
+})
+
+describe('emergency cascade helpers', () => {
+  describe('nextCascadeTierIndex', () => {
+    it('starts at tier 0 when the cascade has never run', () => {
+      expect(nextCascadeTierIndex(null)).toBe(0)
+    })
+
+    it('advances one tier at a time', () => {
+      expect(nextCascadeTierIndex(0)).toBe(1)
+      expect(nextCascadeTierIndex(1)).toBe(2)
+    })
+
+    it('returns null once every tier has been examined (exhausted)', () => {
+      const lastTierIndex = EMERGENCY_CASCADE_RADII_KM.length - 1
+      expect(nextCascadeTierIndex(lastTierIndex)).toBeNull()
+    })
+  })
+
+  describe('isWithinRadius', () => {
+    it('treats an unknown distance as within every radius (neutral, not excluded)', () => {
+      expect(isWithinRadius(null, EMERGENCY_CASCADE_RADII_KM[0])).toBe(true)
+    })
+
+    it('includes a donor exactly at the radius boundary', () => {
+      expect(isWithinRadius(10, 10)).toBe(true)
+    })
+
+    it('excludes a donor beyond the radius', () => {
+      expect(isWithinRadius(11, 10)).toBe(false)
+    })
+  })
+
+  describe('isNotifiedMatchTimedOut', () => {
+    const asOf = new Date('2026-06-01T12:00:00Z')
+
+    it('is not timed out immediately after notification', () => {
+      expect(isNotifiedMatchTimedOut('2026-06-01T11:59:00Z', asOf)).toBe(false)
+    })
+
+    it('is timed out once CASCADE_WAVE_TIMEOUT_MINUTES has elapsed', () => {
+      const notifiedAt = new Date(asOf.getTime() - CASCADE_WAVE_TIMEOUT_MINUTES * 60 * 1000).toISOString()
+      expect(isNotifiedMatchTimedOut(notifiedAt, asOf)).toBe(true)
+    })
+
+    it('is not timed out one minute short of the threshold', () => {
+      const notifiedAt = new Date(asOf.getTime() - (CASCADE_WAVE_TIMEOUT_MINUTES - 1) * 60 * 1000).toISOString()
+      expect(isNotifiedMatchTimedOut(notifiedAt, asOf)).toBe(false)
     })
   })
 })

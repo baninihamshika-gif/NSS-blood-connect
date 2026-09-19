@@ -1,9 +1,10 @@
 // Pure, dependency-free matching logic — no Deno/Supabase imports here on
 // purpose, so this file can be unit-tested directly from Vitest (Node) AND
-// imported unmodified by the Deno edge function at index.ts. Keeping the
-// actual decision logic here (rather than scattered through the HTTP
-// handler) is what makes "transparent ranking" and "configurable rules"
-// verifiable — every number a match score depends on is named and
+// imported unmodified by the Deno edge functions (match-donors,
+// emergency-search) that both depend on it. Keeping the actual decision
+// logic here (rather than scattered through each HTTP handler) is what
+// makes "transparent ranking" and "configurable rules" verifiable — every
+// number a match score or cascade decision depends on is named and
 // documented in one place.
 
 export type BloodGroup = 'A+' | 'A-' | 'B+' | 'B-' | 'O+' | 'O-' | 'AB+' | 'AB-'
@@ -144,5 +145,46 @@ export function calculateMatchScore(input: MatchScoreInput): number {
   return Math.round(normalized * 100) / 100 // 2 decimal places, matches donor_matches.match_score numeric(5,2)
 }
 
-/** Top-N candidates are matched per run — a single batch, not a wave/cascade (that's Phase 7). Configurable. */
+/** Top-N candidates matched per single-pass run (match-donors) or per cascade wave (emergency-search). Configurable. */
 export const MATCH_CANDIDATE_LIMIT = 20
+
+// ---------------------------------------------------------------------------
+// Emergency cascade (Phase 7)
+// ---------------------------------------------------------------------------
+// Radius tiers tried in order as a request's cascade progresses — widening
+// the search when the current tier has no untried candidates left, rather
+// than notifying everyone within the widest radius on the very first pass.
+// These are business-rule placeholders (not medical), documented and
+// configurable, matching the spec's "Expand radius: widen search if unmet."
+// A donor/request pair with an unknown distance (no location-capture UI
+// exists yet — Phase 8) is included at every tier rather than excluded,
+// consistent with the neutral-if-unknown treatment used in scoring above.
+export const EMERGENCY_CASCADE_RADII_KM = [10, 25, 50] as const
+
+/** A NOTIFIED match with no response for longer than this is treated as
+ * timed out for cascade purposes (freeing that "slot" so the next wave can
+ * proceed without waiting indefinitely). A documented placeholder, not a
+ * medically- or operationally-reviewed SLA. */
+export const CASCADE_WAVE_TIMEOUT_MINUTES = 30
+
+export function isNotifiedMatchTimedOut(notifiedAt: string, asOf: Date): boolean {
+  const notified = new Date(notifiedAt)
+  const minutesSince = (asOf.getTime() - notified.getTime()) / (1000 * 60)
+  return minutesSince >= CASCADE_WAVE_TIMEOUT_MINUTES
+}
+
+/** distanceKm === null (unknown location) always counts as "within" every tier. */
+export function isWithinRadius(distanceKm: number | null, radiusKm: number): boolean {
+  if (distanceKm === null) return true
+  return distanceKm <= radiusKm
+}
+
+export type CascadeStopReason = 'fulfilled' | 'closed' | 'exhausted'
+
+/** Given the tier index already examined (null = cascade never run for this
+ * request), returns the next tier to try, or null if every tier has been
+ * examined already (the cascade is exhausted). */
+export function nextCascadeTierIndex(currentTierIndex: number | null): number | null {
+  const next = currentTierIndex === null ? 0 : currentTierIndex + 1
+  return next < EMERGENCY_CASCADE_RADII_KM.length ? next : null
+}
