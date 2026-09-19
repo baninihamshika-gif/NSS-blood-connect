@@ -294,7 +294,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | **Done** |
 | 8 | Realtime, notifications, map (Leaflet/OSM) | **Done** |
 | 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | **Done** |
-| 10 | Final QA/hardening, docs | Not started |
+| 10 | Final QA/hardening, docs | **Done** |
 
 ## Matching Engine (Phase 4)
 
@@ -407,7 +407,7 @@ CREATED ──▶ MATCHING ──▶ PARTIALLY_FULFILLED ──▶ FULFILLED ─
 ```
 
 (`CONTACTING_DONORS` is a legal node in the graph but isn't currently reachable — see
-[Known Limitations](#known-limitations-through-phase-9) below.)
+[Known Limitations](#known-limitations-through-phase-10) below.)
 
 - A **client update** (the requester, via their own RLS-permitted update) may only ever set the new
   status to `CANCELLED` or `COMPLETED` — the two genuinely user-driven actions. Attempting to set
@@ -644,7 +644,51 @@ classes read in the abstract. Two real, global-impact bugs found:
   request forms) to stack on narrow screens (`grid-cols-1 sm:grid-cols-2`) — the blood-group `<select>`'s
   own "Select blood group" placeholder text was being clipped by the half-width column at 375px.
 
-## Known Limitations (through Phase 9)
+## Final QA & Hardening (Phase 10)
+
+### Security/hygiene sweep
+
+Checked, not assumed: confirmed `.env*` (except the committed `.example` templates) was never present
+in git history (`git log --all` against those paths, and `git ls-files` for anything currently tracked
+— both empty), confirmed no `console.log`/`TODO`/`FIXME` debug leftovers anywhere in `src/` or
+`supabase/functions/`, and confirmed both Edge Functions (`match-donors`, `emergency-search`) already
+wrap their entire handler in a top-level `try/catch` returning a proper JSON error response rather than
+crashing without one — this was already solid from Phase 4/7, not new work.
+
+### App-wide error boundary
+
+**A real, general hardening gap, found by the exact bug this closes:** the app had no top-level React
+error boundary anywhere — only the narrowly-scoped `MapErrorBoundary` (Phase 8) existed, covering only
+the map. This is precisely what let a Phase 9 bug (two hook instances racing to subscribe to the same
+realtime channel) render as a silent blank white page instead of a message: React unmounts the whole
+tree on an uncaught render error, and with nothing above it to catch that, there was nothing left to
+show. Added `ErrorBoundary` (`src/components/ErrorBoundary.tsx`), wrapping the whole app in `App.tsx`,
+with a "Something went wrong" message and a reload button. Verified live, not just by inspection: a
+route temporarily made to throw during render was caught correctly (the fallback UI rendered, with the
+error logged to the console), then reverted before committing — this doesn't replace fixing bugs at the
+source (as Phase 9's fix did), it's what stands between a user and a blank screen for whichever one
+isn't caught yet.
+
+### Final regression pass
+
+Re-ran the full verification pipeline (`tsc -b --force`, lint, all 95 Vitest tests, production build)
+clean after every change in this phase. Beyond that, ran one more live end-to-end smoke test using
+**genuinely fresh accounts** rather than the two long-lived demo accounts reused throughout — two
+pre-confirmed users created directly via the Supabase Admin API (bypassing the UI's real email
+confirmation requirement, the same disposable-user pattern the Vitest RLS suite already uses, with
+enough `user_metadata` for the app's own `ensureProfile()` backfill to construct a complete profile on
+first login, exactly as it would for a real confirmed user). Logged in through the actual UI as both,
+created a request, ran matching, and confirmed it correctly found and scored two real eligible
+candidates (the fresh donor plus the persistent demo donor, both compatible, both `NOTIFIED` with real
+relevance percentages) — the layered result of nine phases of matching-engine, notification, and
+realtime logic still functioning correctly together end-to-end for accounts that had never touched the
+app before. Both throwaway accounts were deleted via the Admin API afterward (in a `finally` block, so
+cleanup ran even though a test-script bug — not an app bug — hit later in the same run: a regex meant to
+match "donors contacted" was missing the plural, so `/donor contacted/` didn't match; confirmed by
+inspecting the actual screenshot, which showed the correct data). A follow-up check against the Admin
+API confirmed exactly the pre-existing four accounts remained — no orphaned test users left behind.
+
+## Known Limitations (through Phase 10)
 
 - Request creation (normal + emergency), history, details, matching, the emergency cascade, donor
   notification/response, the full status-tracking lifecycle (auto-fulfillment, completion,
@@ -725,3 +769,10 @@ classes read in the abstract. Two real, global-impact bugs found:
   donor dashboard. Worth a proper "complete your profile" flow in a later phase.
 - Component-level tests (e.g. for `ProtectedRoute`'s redirect logic) aren't written yet; Phase 1
   testing focused on RLS, which is the real authorization boundary — see [Testing](#testing).
+- No CI pipeline — the verification steps documented throughout this README (`tsc -b`, lint, `npm run
+  test`, `npm run build`) are run locally/manually before every commit, not enforced automatically on
+  push or PR. Worth wiring up as a GitHub Actions workflow before this project has other contributors.
+- `ErrorBoundary`'s fallback (Phase 10) logs the caught error to the browser console only — there's no
+  error-tracking/monitoring service (e.g. Sentry) wired up to actually surface these in production,
+  where nobody is watching the console. Fine for a project at this stage; a real gap before a genuine
+  production launch with real users.
