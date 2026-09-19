@@ -4,12 +4,14 @@ import { useAuth } from '@/hooks/useAuth'
 import { useDonorProfile } from '@/hooks/useDonorProfile'
 import { useUpdateAvailability } from '@/hooks/useUpdateAvailability'
 import { useDonationRecords } from '@/hooks/useDonationRecords'
+import { useIncomingMatches } from '@/hooks/useIncomingMatches'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { IncomingMatchCard } from '@/components/matching/IncomingMatchCard'
 import type { AvailabilityStatus } from '@/types/database'
 
 const availabilityTone = {
@@ -82,6 +84,30 @@ function DonationHistorySection() {
   )
 }
 
+function IncomingRequestsSection() {
+  const { data: matches, isLoading, isError } = useIncomingMatches()
+
+  if (isLoading) return <Spinner label="Loading incoming requests…" />
+  if (isError) return <ErrorMessage message="Could not load incoming requests. Please refresh." />
+  if (!matches || matches.length === 0) {
+    return (
+      <EmptyState
+        icon={Inbox}
+        title="No incoming requests yet"
+        description="Blood requests matched to your profile will appear here once a requester runs donor matching."
+      />
+    )
+  }
+
+  return (
+    <div className="flex flex-col divide-y divide-gray-200 rounded-xl border border-gray-200 bg-white">
+      {matches.map((match) => (
+        <IncomingMatchCard key={match.id} match={match} />
+      ))}
+    </div>
+  )
+}
+
 export function DonorDashboardPage() {
   const { profile } = useAuth()
   const { data: donorProfile, isLoading, isError } = useDonorProfile()
@@ -146,11 +172,7 @@ export function DonorDashboardPage() {
 
       <div>
         <h2 className="mb-3 text-lg font-semibold text-gray-900">Incoming Requests</h2>
-        <EmptyState
-          icon={Inbox}
-          title="No incoming requests yet"
-          description="Blood requests matched to your profile will appear here once the matching engine is live."
-        />
+        <IncomingRequestsSection />
       </div>
 
       <div>

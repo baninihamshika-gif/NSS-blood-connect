@@ -14,6 +14,7 @@ import { ResetPasswordPage } from '@/pages/public/ResetPasswordPage'
 import { NotFoundPage } from '@/pages/public/NotFoundPage'
 import { DonorDashboardPage } from '@/pages/donor/DonorDashboardPage'
 import { DonorProfilePage } from '@/pages/donor/DonorProfilePage'
+import { DonorRequestDetailsPage } from '@/pages/donor/DonorRequestDetailsPage'
 import { RequesterDashboardPage } from '@/pages/requester/RequesterDashboardPage'
 import { CreateRequestPage } from '@/pages/requester/CreateRequestPage'
 import { EmergencyRequestPage } from '@/pages/requester/EmergencyRequestPage'
@@ -54,6 +55,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute allowedRole="DONOR">
               <DonorProfilePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/donor/matches/:matchId"
+          element={
+            <ProtectedRoute allowedRole="DONOR">
+              <DonorRequestDetailsPage />
             </ProtectedRoute>
           }
         />

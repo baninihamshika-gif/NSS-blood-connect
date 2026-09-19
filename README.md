@@ -99,6 +99,11 @@ Migrations live in `supabase/migrations/` and are numbered in apply order:
 4. `0004_profiles_select_self_only.sql` — Phase 1 fix: tightens `profiles` SELECT from "any
    authenticated user" to self-only, since RLS can't mask individual columns and the original policy
    let any user read any other user's `phone`/`email`. Found by the Phase 1 RLS audit, not by design.
+5. `0005_sync_match_status_from_response.sql` — Phase 5: a `SECURITY DEFINER` trigger that mirrors a
+   donor's own `donor_responses` insert/update onto `donor_matches.match_status`. `donor_matches` has
+   no client UPDATE policy (Phase 1 design — see 0003), so this is the narrow, audited path a donor's
+   accept/decline can affect it through, rather than reopening general client write access to that
+   table. A second trigger sets `responded_at` from the server clock, not a client-supplied value.
 
 Apply with the Supabase CLI:
 
@@ -109,7 +114,7 @@ supabase db push
 
 Or paste each file's contents into the Supabase SQL editor in order.
 
-**Status:** a live Supabase project is provisioned and linked; all 4 migrations are applied. `.env`
+**Status:** a live Supabase project is provisioned and linked; all 5 migrations are applied. `.env`
 is populated locally (gitignored — never commit it). If you need to point this project at a
 different Supabase instance, update `.env` and re-run `supabase link` + `supabase db push`.
 
@@ -211,12 +216,14 @@ exclusive control.
 npm run test
 ```
 
-38 RLS tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
+40 RLS tests currently pass, covering: profile self-insert/update with cross-user negative tests; donor
 role-gating on `donor_profiles`/`blood_requests` inserts (`current_user_role()`); match/response/
 notification/history visibility restricted to participants; duplicate-match and duplicate-response
 rejection (unique constraints); future-dated `date_of_birth`/`last_donation_date` and out-of-range
 `units_required` rejected at the database level (defense in depth behind the Phase 2/3 forms' own
-validation); and unauthenticated (anon) access returning zero rows from every sensitive table.
+validation); unauthenticated (anon) access returning zero rows from every sensitive table; and (Phase
+5) the `donor_responses` → `donor_matches.match_status` trigger reflecting the latest response while a
+direct client update to `match_status` is still rejected.
 
 `tests/matching-logic.test.ts` (21 tests) unit-tests the matching engine's pure scoring/compatibility
 math in isolation — see [Matching Engine](#matching-engine-phase-4) below.
@@ -228,7 +235,7 @@ compatible + available + eligible donor matches, not the incompatible/unavailabl
 ones), the `CREATED` → `MATCHING` status transition with its `request_status_history` row, and
 idempotency (re-running does not create a duplicate `donor_matches` row).
 
-65 tests total, all passing against the live project.
+68 tests total, all passing against the live project.
 
 ## Phase Plan
 
@@ -241,7 +248,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 2 | Donor module: editable profile (basic info + donor details), availability control, real donation history query, privacy notice | **Done** |
 | 3 | Requester module: real dashboard (own stats + recent requests), create request (normal/emergency), request history/details | **Done** |
 | 4 | Matching engine: server-side matching (Edge Function), transparent ranking, `donor_matches` generation | **Done** |
-| 5 | Donor request & response: notify donors, accept/decline | Not started |
+| 5 | Donor request & response: notify donors on match, donor sees request, accept/decline | **Done** |
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI | Not started |
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | Not started |
 | 8 | Realtime, notifications, map (Leaflet/OSM) | Not started |
@@ -289,7 +296,7 @@ documented weights out of 100:
 | Distance | 25 | Haversine distance between `approx_lat/lng` on the request and the donor; unknown coordinates (no location-capture UI yet — that's Phase 8) score a neutral half-credit rather than being penalized. Linear falloff to 0 at `MAX_MATCH_DISTANCE_KM = 50`. |
 | Availability | 15 | `AVAILABLE` = full credit, `MAYBE` = half, `UNAVAILABLE` donors are excluded from candidacy before scoring even applies. |
 | Donation timing | 10 | 0 at the eligibility boundary, ramping to full credit by `DONATION_TIMING_FULL_SCORE_DAYS = 180` days since last donation; no history recorded = full credit (treated as ready). |
-| Response history | 10 | Accept rate from past `donor_responses`. No history yet (Phase 5 hasn't shipped, so this is currently 0 for every donor) = neutral half-credit, not penalized. |
+| Response history | 10 | Accept rate from past `donor_responses`. Real once a donor has responded to prior matches (Phase 5); a donor with no history yet = neutral half-credit, not penalized. |
 
 These four factors sum to a weight budget of 60, matching the spec exactly (25+15+10+10). **The
 remaining 40 is deliberately left unallocated** rather than filled with an invented fifth factor — the
@@ -301,12 +308,11 @@ weighted sum by 60), so it still reads as a clean percentage without fabricating
 ### Scope: single batch, not a cascade
 
 One run matches up to `MATCH_CANDIDATE_LIMIT = 20` top-scored eligible candidates. It does not
-notify donors (Phase 5), does not expand search radius or retry in waves if too few candidates exist
-(Emergency Cascade, Phase 7), and does not show fake "searching donors" progress. Re-running matching
-on the same request is idempotent — existing `donor_matches` rows get their score/distance refreshed,
-not duplicated (enforced by the `(request_id, donor_id)` unique constraint plus explicit
-insert-vs-update branching in the function), and an existing match's `match_status` is never reset by
-a re-run (important once Phase 5 lets a donor actually accept/decline).
+expand search radius or retry in waves if too few candidates exist (Emergency Cascade, Phase 7), and
+does not show fake "searching donors" progress. Re-running matching on the same request is idempotent
+— existing `donor_matches` rows get their score/distance refreshed, not duplicated (enforced by the
+`(request_id, donor_id)` unique constraint plus explicit insert-vs-update branching in the function),
+and an existing match's `match_status` is never reset by a re-run.
 
 ### Privacy: no donor identity in match results
 
@@ -314,30 +320,59 @@ The requester-facing match list (`DonorMatchCard`) shows only blood group, dista
 relevance — never the donor's name. This follows directly from the Phase 1 RLS fix: `profiles` SELECT
 is self-only, so a requester cannot read a matched donor's `full_name` even if the UI tried to show
 it. Per the reference UI's "Contact: Available after confirmation," identity/contact should only
-surface after an actual accepted response — a stronger relationship than "software suggested a
-match" — which is Phase 5+ scope, not Phase 4.
+surface after some stronger confirmation than "accepted a match" — the accepted-state UI itself says
+"Contact: Available after confirmation," which Phase 5 deliberately does not build yet (see below).
 
-## Known Limitations (through Phase 4)
+## Donor Response Flow (Phase 5)
 
-- Request creation (normal + emergency), history, details, and matching are live; donor notification
-  and response, the status-history timeline, and the map are still later phases.
-- "Incoming Requests" on the donor dashboard stays an empty-state placeholder by design — a donor
-  actually *seeing* a request they're matched to depends on the notification flow (Phase 5), which
-  doesn't exist yet, even though matching itself (Phase 4) does now. Querying `donor_matches` for a
-  "preview" now would jump ahead of Phase 5's actual notification/accept-decline UX.
+When `match-donors` inserts a **new** `donor_matches` row, it now also creates a `notifications` row
+for that donor and sets `match_status` straight to `NOTIFIED` (skipping the `PENDING` default) —
+notification happens as part of the same pipeline that creates the match, not as a separately gated
+step, matching the spec's conceptual flow ("Notify selected donors" immediately follows "Create
+donor_matches").
+
+The donor dashboard's "Incoming Requests" queries `donor_matches` for the signed-in donor (embedding
+`blood_requests` via a real foreign key — unlike the `donor_matches` ↔ `donor_profiles` pairing used
+elsewhere, which has no direct FK and needs two queries merged client-side). Opening a match shows
+its details and, for a `NOTIFIED` match, Accept/Decline buttons.
+
+**Accept/decline mechanics:** `donor_matches` still has no client UPDATE policy (Phase 1's deliberate
+design — that table is server-controlled). A donor accepting or declining inserts directly into
+`donor_responses` with the final decision (RLS already lets a donor insert their own response for
+their own match; the unique constraint on `match_id` prevents responding twice). A new trigger
+(migration `0005`) mirrors that response onto `donor_matches.match_status` — the only values it can
+ever write are `ACCEPTED`/`DECLINED`, and only in reaction to an insert/update RLS already scoped to
+the donor's own match, so this doesn't reopen general client control over `match_status`. A second
+trigger sets `responded_at` from the server clock rather than trusting the client.
+
+Once accepted, the donor sees an "✓ Request Accepted" card (hospital name, "Contact: Available after
+confirmation") matching the required reference UI — and the requester's match list picks up the
+`ACCEPTED` badge automatically through the same trigger, no extra requester-side code needed. No
+fabricated ETA or a `[VIEW DIRECTIONS]` button — those need real location/routing data (Phase 8) and
+would otherwise be exactly the kind of invented data the project's rules prohibit.
+
+## Known Limitations (through Phase 5)
+
+- Request creation (normal + emergency), history, details, matching, donor notification, and
+  accept/decline are all live; the status-history timeline and the map are still later phases.
 - The emergency request form creates the `blood_requests` row (type `EMERGENCY`, priority
   `URGENT`/`CRITICAL`) but does **not** simulate "searching donors" or show fake donor counts — running
   the real matching engine from the request details page produces real numbers instead. Wave-based
   expansion if too few candidates are found is the cascade (Phase 7), not yet implemented.
-- Distance and response-history match factors are currently neutral for almost every real donor —
-  not a bug, just sparse upstream data: no location-capture UI exists yet (Phase 8) so
-  `approx_lat/lng` is null on every request/donor, and no donor has ever responded to anything yet
-  (Phase 5 doesn't exist). Both factors are fully implemented and will start discriminating
-  automatically once that data exists — no matching-engine changes needed later.
+- The distance match factor is currently neutral for almost every real donor/request pair — not a
+  bug, just sparse upstream data: no location-capture UI exists yet (Phase 8), so `approx_lat/lng` is
+  null everywhere. It's fully implemented and will start discriminating automatically once that data
+  exists — no matching-engine changes needed later.
+- Accepting a match doesn't yet reveal donor/requester contact info to each other — intentional, see
+  [Donor Response Flow](#donor-response-flow-phase-5) above; that needs whatever "confirmed further"
+  step Phase 6 introduces, matching the reference UI's own "Contact: Available after confirmation."
+- No decline-reason capture, no re-notifying other candidates when one donor declines, and no
+  "sufficient donors found, stop notifying" logic — those are Emergency Cascade behaviors (Phase 7),
+  not this phase's "one donor, one response" scope.
 - `match-donors` is invoked directly from the client via `supabase.functions.invoke` on a button
   click, not automatically on request creation — a requester has to press "Find Matching Donors."
   Nothing in the spec requires auto-triggering, and doing so silently would make matching runs harder
-  to reason about while testing; revisit if Phase 5+ wants it automatic.
+  to reason about while testing; revisit if a later phase wants it automatic.
 - Request details currently shows a single current status badge, not the full timeline UI from the
   reference design (✓ Request Created → ✓ Matching Started → ...) — that's explicitly Phase 6
   (`request_status_history` + timeline UI).

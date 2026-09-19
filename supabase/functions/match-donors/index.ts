@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
 
     const { data: request, error: requestError } = await admin
       .from('blood_requests')
-      .select('id, requester_id, blood_group, units_required, status, approx_lat, approx_lng')
+      .select('id, requester_id, blood_group, units_required, status, priority, hospital_name, approx_lat, approx_lng')
       .eq('id', requestId)
       .maybeSingle()
     if (requestError) throw requestError
@@ -164,14 +164,28 @@ Deno.serve(async (req) => {
         if (error) throw error
         updated += 1
       } else {
+        // New match: notification happens immediately as part of this same
+        // pipeline (Phase 5 "notify donors"), not as a separately gated step
+        // — so the row goes straight to NOTIFIED rather than sitting at the
+        // PENDING default.
         const { error } = await admin.from('donor_matches').insert({
           request_id: requestId,
           donor_id: candidate.donorId,
           match_score: candidate.score,
           distance_km: candidate.distanceKm,
+          match_status: 'NOTIFIED',
         })
         if (error) throw error
         inserted += 1
+
+        const { error: notifyError } = await admin.from('notifications').insert({
+          user_id: candidate.donorId,
+          request_id: requestId,
+          type: 'MATCH_REQUEST',
+          title: `${request.blood_group} blood needed`,
+          message: `You've been matched to a ${request.priority.toLowerCase()} request for ${request.units_required} unit(s) of ${request.blood_group}${request.hospital_name ? ` at ${request.hospital_name}` : ''}.`,
+        })
+        if (notifyError) throw notifyError
       }
     }
 

@@ -323,6 +323,31 @@ describe('Row Level Security', () => {
         .select()
       expect(hijackAttempt).toEqual([])
     })
+
+    it('sets responded_at from the server clock, not a client-supplied value', async () => {
+      const { data } = await donorA.client.from('donor_responses').select('responded_at').eq('id', responseAId).single()
+      expect(data?.responded_at).toBeTruthy()
+    })
+
+    it('syncs donor_matches.match_status from the response via trigger (Phase 5) — reflects the latest response, not just the first', async () => {
+      // The prior two tests inserted response=ACCEPTED then updated it to
+      // DECLINED — the trigger (migration 0005) should have fired both times,
+      // leaving match_status at the latest value.
+      const { data } = await donorA.client.from('donor_matches').select('match_status').eq('id', matchAId).single()
+      expect(data?.match_status).toBe('DECLINED')
+    })
+
+    it('still rejects a donor directly updating donor_matches.match_status (no client update policy — only the trigger can change it)', async () => {
+      const { data: hijackAttempt } = await donorA.client
+        .from('donor_matches')
+        .update({ match_status: 'ACCEPTED' })
+        .eq('id', matchAId)
+        .select()
+      expect(hijackAttempt).toEqual([])
+
+      const { data: unchanged } = await donorA.client.from('donor_matches').select('match_status').eq('id', matchAId).single()
+      expect(unchanged?.match_status).toBe('DECLINED') // unchanged by the direct-update attempt
+    })
   })
 
   describe('donation_records', () => {

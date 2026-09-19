@@ -65,7 +65,7 @@ function MatchingSection({ requestId, requestStatus }: { requestId: string; requ
         <EmptyState
           icon={Users}
           title="No matched donors yet"
-          description="Run donor matching to find eligible candidates. Matches are software-suggested and don't imply medical certainty — contact details are only shared after a donor confirms (coming in a later phase)."
+          description="Run donor matching to find eligible candidates. Matches are software-suggested and don't imply medical certainty — contact details become available once accepted matches are confirmed further, which isn't built yet."
         />
       )}
       {!isLoading && !isError && matches && matches.length > 0 && (
@@ -153,8 +153,8 @@ export function RequestDetailsPage() {
             </dl>
 
             <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-600">
-              Donor responses and a full status timeline aren't live yet — matching is, so this request can already
-              find eligible candidates below.
+              A full status timeline isn't live yet — matching and donor responses are, so you can already find
+              candidates and see whether they've accepted below.
             </div>
           </Card>
 
