@@ -12,6 +12,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IncomingMatchCard } from '@/components/matching/IncomingMatchCard'
+import { DonationsOverTimeChart } from '@/components/dashboard/DonationsOverTimeChart'
 import type { AvailabilityStatus } from '@/types/database'
 
 const availabilityTone = {
@@ -173,6 +174,13 @@ export function DonorDashboardPage() {
       <div>
         <h2 className="mb-3 text-lg font-semibold text-gray-900">Incoming Requests</h2>
         <IncomingRequestsSection />
+      </div>
+
+      <div>
+        <h2 className="mb-3 text-lg font-semibold text-gray-900">Donations Over Time</h2>
+        <Card>
+          <DonationsOverTimeChart />
+        </Card>
       </div>
 
       <div>

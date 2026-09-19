@@ -35,8 +35,15 @@ export function NotificationBell() {
         setOpen(false)
       }
     }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
     document.addEventListener('mousedown', onClickOutside)
-    return () => document.removeEventListener('mousedown', onClickOutside)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   }, [open])
 
   const onSelect = (notification: NotificationRecord) => {
@@ -59,6 +66,8 @@ export function NotificationBell() {
         onClick={() => setOpen((v) => !v)}
         className="relative flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100"
         aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
+        aria-haspopup="true"
+        aria-expanded={open}
       >
         <Bell className="h-5 w-5" aria-hidden="true" />
         {unreadCount > 0 && (
@@ -69,7 +78,11 @@ export function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg">
+        <div
+          role="region"
+          aria-label="Notifications"
+          className="fixed inset-x-4 top-16 z-20 rounded-xl border border-gray-200 bg-white shadow-lg sm:absolute sm:inset-x-auto sm:top-auto sm:right-0 sm:mt-2 sm:w-80"
+        >
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <p className="text-sm font-semibold text-gray-900">Notifications</p>
             {unreadCount > 0 && (
@@ -106,7 +119,7 @@ export function NotificationBell() {
                     <p className="text-sm font-medium text-gray-900">{notification.title}</p>
                   </div>
                   <p className="text-xs text-gray-600">{notification.message}</p>
-                  <p className="text-xs text-gray-400">{formatRelativeTime(notification.created_at)}</p>
+                  <p className="text-xs text-gray-500">{formatRelativeTime(notification.created_at)}</p>
                 </button>
               ))}
           </div>

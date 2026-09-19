@@ -8,6 +8,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { RequestListItem } from '@/components/requests/RequestListItem'
+import { RequestStatusChart } from '@/components/dashboard/RequestStatusChart'
 
 const ACTIVE_STATUSES = ['CREATED', 'MATCHING', 'CONTACTING_DONORS', 'PARTIALLY_FULFILLED']
 
@@ -60,6 +61,13 @@ export function RequesterDashboardPage() {
           <p className="text-2xl font-bold text-green-700">
             {isLoading ? '—' : (requests?.filter((r) => r.status === 'FULFILLED' || r.status === 'COMPLETED').length ?? 0)}
           </p>
+        </Card>
+      </div>
+
+      <div>
+        <h2 className="mb-3 text-lg font-semibold text-gray-900">Requests by Status</h2>
+        <Card>
+          <RequestStatusChart requests={requests ?? undefined} isLoading={isLoading} isError={isError} />
         </Card>
       </div>
 

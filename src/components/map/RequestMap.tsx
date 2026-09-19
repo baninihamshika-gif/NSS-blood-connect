@@ -120,7 +120,7 @@ export function RequestMap({
           <span className="h-2.5 w-2.5 rounded-full bg-gray-400" /> Declined / expired
         </span>
       </div>
-      <p className="mt-1 text-xs text-gray-400">
+      <p className="mt-1 text-xs text-gray-500">
         Donor positions are approximate (~100m), never exact addresses.
       </p>
     </div>

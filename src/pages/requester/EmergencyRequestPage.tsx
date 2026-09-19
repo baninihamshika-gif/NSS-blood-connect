@@ -61,7 +61,7 @@ export function EmergencyRequestPage() {
         <form className="flex flex-col gap-4" onSubmit={handleSubmit(onSubmit)} noValidate>
           {submitError && <ErrorMessage message={submitError} />}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Select label="Blood group" error={errors.bloodGroup?.message} defaultValue="" {...register('bloodGroup')}>
               <option value="" disabled>
                 Select blood group

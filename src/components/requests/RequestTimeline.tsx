@@ -43,7 +43,7 @@ export function RequestTimeline({
             ) : (
               <CircleDashed className="h-4 w-4 shrink-0 text-gray-300" aria-hidden="true" />
             )}
-            <span className={reached ? 'font-medium text-gray-900' : 'text-gray-400'}>{statusLabel[status]}</span>
+            <span className={reached ? 'font-medium text-gray-900' : 'text-gray-500'}>{statusLabel[status]}</span>
             {isCurrent && !isTerminatedEarly && (
               <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">Current</span>
             )}

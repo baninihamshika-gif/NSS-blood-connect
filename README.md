@@ -293,7 +293,7 @@ Work proceeds phase-by-phase. Each phase stops for explicit approval before the 
 | 6 | Request tracking: status state machine, `request_status_history`, timeline UI, completion/cancellation, partial fulfillment | **Done** |
 | 7 | Emergency cascade: waves, timeouts, radius expansion, idempotency | **Done** |
 | 8 | Realtime, notifications, map (Leaflet/OSM) | **Done** |
-| 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | Not started |
+| 9 | Dashboards/analytics (Recharts), responsive polish, accessibility | **Done** |
 | 10 | Final QA/hardening, docs | Not started |
 
 ## Matching Engine (Phase 4)
@@ -407,7 +407,7 @@ CREATED ──▶ MATCHING ──▶ PARTIALLY_FULFILLED ──▶ FULFILLED ─
 ```
 
 (`CONTACTING_DONORS` is a legal node in the graph but isn't currently reachable — see
-[Known Limitations](#known-limitations-through-phase-8) below.)
+[Known Limitations](#known-limitations-through-phase-9) below.)
 
 - A **client update** (the requester, via their own RLS-permitted update) may only ever set the new
   status to `CANCELLED` or `COMPLETED` — the two genuinely user-driven actions. Attempting to set
@@ -578,7 +578,73 @@ nothing for that tile), the page doesn't crash, and — critically for `Location
 manual latitude/longitude inputs stay fully visible and usable throughout, so the feature never actually
 depends on the map succeeding.
 
-## Known Limitations (through Phase 8)
+## Dashboards, Analytics & Accessibility (Phase 9)
+
+### Charts
+
+Two charts, one per role, both built from data each dashboard was already fetching — no separate
+analytics endpoint and no fabricated figures. `RequestStatusChart` (requester dashboard) groups the
+requester's own requests by status; `DonationsOverTimeChart` (donor dashboard) sums a donor's own
+`donation_records` units by month. Both use the same color convention as the badges shown elsewhere for
+the same status (`toneHex` mirrors `statusTone`'s Tailwind shades), and both show an `EmptyState` rather
+than an empty or zero-filled chart when there's nothing to plot yet.
+
+**A real bug found and fixed via live testing:** `RequestStatusChart` originally called
+`useMyBloodRequests()` internally — the same hook the dashboard page already calls for its stat tiles.
+Since that hook carries a Phase 8 realtime subscription keyed by a fixed channel name
+(`my-blood-requests:${userId}`), two concurrently mounted instances tried to subscribe to the same
+channel twice; Supabase-js throws when a second `.on()` is added to an already-subscribed channel, and
+with no error boundary in the tree, the whole dashboard rendered blank. Neither `tsc` nor the test suite
+catches this class of bug, since it only manifests when two instances of the same realtime-backed hook
+are actually mounted together at runtime. Fixed by having the chart take its data as a prop from the
+page that already fetched it, instead of re-fetching (and re-subscribing) internally — the same fix
+doubles as the more efficient approach, since it removes a redundant subscription entirely rather than
+just tolerating it.
+
+### Accessibility
+
+- `NotificationBell`'s dropdown toggle now exposes `aria-haspopup`/`aria-expanded`, the panel has
+  `role="region" aria-label="Notifications"`, and pressing Escape closes it (previously only
+  click-outside did).
+- Fixed three real WCAG AA contrast failures found by checking the actual hex values in use:
+  `text-gray-400` (#9ca3af on white ≈ 2.5:1, needs 4.5:1 for normal text) on the map's donor-privacy
+  disclaimer, notification timestamps, and not-yet-reached steps in the request tracking timeline — all
+  bumped to `text-gray-500` (≈4.8:1). Decorative icons and native input placeholder text were
+  deliberately left alone (icons are `aria-hidden`; placeholder text has an established lighter
+  convention and is backed by a real adjacent `<label>`).
+- Both charts wrap their SVG in an `aria-hidden` container with a sibling `sr-only` paragraph stating
+  the same data as a sentence, and pass `accessibilityLayer={false}` to Recharts. Recharts' own
+  accessibility layer (`role="application" tabindex="0"` on the SVG, for arrow-key data exploration) is
+  a real, deliberate feature — disabling it isn't a downgrade so much as a consistency choice: paired
+  with the `aria-hidden` wrapper needed for the `sr-only` alternative, an *enabled* accessibility layer
+  would leave a keyboard-only user tabbing onto a stop a screen reader announces nothing useful for
+  (content hidden, but still focusable) — worse than either extreme alone. Confirmed live: the chart
+  SVGs carry neither attribute after the fix.
+
+### Responsive polish
+
+Audited at a 375px mobile viewport across every major page (landing, login, both dashboards, request
+creation/details, donor profile) with live Playwright screenshots, not just Tailwind's responsive
+classes read in the abstract. Two real, global-impact bugs found:
+
+- **Navbar wrapping mid-word**: at 375px, "NSS Blood Connect" and the "Log out" button both wrapped
+  their own text onto a second line (ugly, and on some strings genuinely hard to read) instead of the
+  row itself wrapping. Fixed by making the navbar's flex container wrap as a whole (`flex-wrap`) with
+  `whitespace-nowrap` on each label, so a narrow screen gets a clean two-row layout (logo, then nav
+  links) instead of individual text fragments breaking mid-string. This affects every page, since
+  `Navbar` is global.
+- **Notification dropdown overflowing off-screen**: the panel was a fixed 320px wide, right-aligned to
+  its own small positioning ancestor (the bell button's wrapper `div`), not to the viewport — on a
+  375px screen, right-aligning a 320px panel to a button sitting well right-of-center pushed the panel's
+  left edge past the screen's left edge entirely (confirmed via screenshot: "Notifications" rendered as
+  "otifications", visibly clipped). Fixed with a responsive positioning switch: `fixed inset-x-4 top-16`
+  (anchored to the actual viewport, with margins) below the `sm` breakpoint, reverting to the original
+  `absolute right-0` panel anchored to the button above it.
+- Also narrowed the "Blood group / Units required" two-column grid (request creation and emergency
+  request forms) to stack on narrow screens (`grid-cols-1 sm:grid-cols-2`) — the blood-group `<select>`'s
+  own "Select blood group" placeholder text was being clipped by the half-width column at 375px.
+
+## Known Limitations (through Phase 9)
 
 - Request creation (normal + emergency), history, details, matching, the emergency cascade, donor
   notification/response, the full status-tracking lifecycle (auto-fulfillment, completion,
@@ -596,6 +662,19 @@ depends on the map succeeding.
   UI, not a background delivery channel; nothing in the spec's Phase 8 scope calls for one.
 - The map has no clustering — with very many donor pins in a small area, overlapping markers aren't
   grouped. Not a concern at current real data volumes; worth revisiting if that changes.
+- One chart per dashboard (status breakdown for requesters, donations-over-time for donors) — covers
+  the spec's "dashboards/analytics" scope with real per-user data rather than building out a larger
+  analytics surface nothing in the spec specifically calls for.
+- Adding Recharts grew the production bundle from ~880KB to ~1.23MB (gzipped ~359KB), pushing further
+  past Vite's 500KB chunk-size warning threshold. No code-splitting (`dynamic import()`) was introduced
+  to address it — the warning is pre-existing (this build already exceeded 500KB before Phase 9) and
+  splitting the bundle wasn't part of this phase's stated scope; worth revisiting in Phase 10 if load
+  performance becomes a concrete concern rather than a build-time warning.
+- The accessibility and responsive-layout work in this phase was a manual, targeted audit (live
+  Playwright screenshots at a mobile viewport, contrast values checked by hand, keyboard/Escape behavior
+  verified live) driven by what the audit actually found, not a full WCAG conformance pass or an
+  automated tool like `axe-core` wired into CI — real issues were fixed as they turned up, but an
+  automated audit could surface others this pass didn't.
 - Accepting a match, and even completing a request, still doesn't reveal donor/requester contact info
   to each other — intentional, matching the reference UI's own "Contact: Available after confirmation"
   literally shown on the *accepted* state, not just before it. No phase in the spec explicitly owns
