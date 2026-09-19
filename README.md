@@ -1,4 +1,4 @@
-# NSS Blood Connect
+# Jeevan Setu
 
 A real-time blood emergency coordination web application built around one central flow:
 
@@ -9,7 +9,7 @@ future phases early — see [Phase Plan](#phase-plan) below.
 
 ## Product Concept
 
-NSS Blood Connect converts a blood requirement into a coordinated request: identify suitable/available
+Jeevan Setu converts a blood requirement into a coordinated request: identify suitable/available
 donors, prioritize matches using transparent software rules, send donor requests, collect
 accept/decline responses, track progress, and expand the search when the requirement is not fulfilled.
 

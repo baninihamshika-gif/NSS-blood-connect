@@ -3,6 +3,7 @@ import { Droplet } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/Button'
 import { NotificationBell } from '@/components/notifications/NotificationBell'
+import { APP_NAME } from '@/constants'
 
 export function Navbar() {
   const { user, profile, logout, actionLoading } = useAuth()
@@ -14,7 +15,7 @@ export function Navbar() {
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
         <Link to="/" className="flex items-center gap-2 whitespace-nowrap font-bold text-gray-900">
           <Droplet className="h-6 w-6 shrink-0 text-brand-600" aria-hidden="true" />
-          NSS Blood Connect
+          {APP_NAME}
         </Link>
         <nav className="flex flex-wrap items-center gap-3">
           {user ? (

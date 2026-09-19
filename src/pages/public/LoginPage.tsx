@@ -10,6 +10,7 @@ import { ErrorMessage } from '@/components/ui/ErrorMessage'
 import { useAuth } from '@/hooks/useAuth'
 import { loginSchema, type LoginFormValues } from '@/lib/validation/auth'
 import { demoAccounts, type DemoAccount } from '@/lib/env'
+import { APP_NAME } from '@/constants'
 import type { Profile } from '@/types/database'
 
 export function LoginPage() {
@@ -67,7 +68,7 @@ export function LoginPage() {
     <div className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-4 py-12">
       <Card>
         <h1 className="text-xl font-bold text-gray-900">Log in</h1>
-        <p className="mt-1 text-sm text-gray-600">Welcome back to NSS Blood Connect.</p>
+        <p className="mt-1 text-sm text-gray-600">Welcome back to {APP_NAME}.</p>
 
         <form className="mt-6 flex flex-col gap-4" onSubmit={handleSubmit(onSubmit)} noValidate>
           {submitError && <ErrorMessage message={submitError} />}

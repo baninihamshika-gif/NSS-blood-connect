@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { AlertTriangle, Droplet, ArrowRight } from 'lucide-react'
 import { useLandingStats } from '@/hooks/useLandingStats'
+import { APP_NAME } from '@/constants'
 
 function StatPill({ icon, label, value, loading }: { icon: string; label: string; value: number; loading: boolean }) {
   return (
@@ -17,7 +18,7 @@ export function LandingPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-16 text-center">
-      <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">NSS Blood Connect</p>
+      <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">{APP_NAME}</p>
       <h1 className="mt-3 text-4xl font-extrabold tracking-tight text-gray-900 sm:text-5xl">
         Find Blood. Save Time. Save Lives.
       </h1>
